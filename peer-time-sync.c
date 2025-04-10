@@ -6,6 +6,7 @@
 #include <stdbool.h> // bool type
 #include <limits.h> // limits macros
 #include <string.h> // memset
+#include <fcntl.h> // non-blocking socket
 
 #include <sys/types.h> // skopiowane straigh z labow (moze cos stad warto usunac?)
 #include <sys/socket.h>
@@ -14,6 +15,9 @@
 #include <arpa/inet.h>
 
 #include "err.h" // error handling
+
+#define HELLO 1
+#define MAX_MSG_SIZE 1024
 
 static uint16_t read_port(char const *string) {
     char *endptr;
@@ -26,19 +30,24 @@ static uint16_t read_port(char const *string) {
 }
 
 int main(int argc, char *argv[]) {
-    // set synchronization level
-    uint8_t synchronized = 255;
+    uint8_t synchronized = 255; // Set default synchronization level
+    char message[MAX_MSG_SIZE]; // Create buffer for messages
+    memset(message, 0, sizeof(message)); 
+    ssize_t message_size = 0;
 
     // set bind address
     struct sockaddr_in bind_address;
+    memset(&bind_address, 0, sizeof(bind_address));
     bind_address.sin_family = AF_INET; // IPv4
-    bind_address.sin_addr.s_addr = htonl(INADDR_ANY); // Listening on all interfaces.
-    bind_address.sin_port = htons(0); // Listening on any port by default.
+    bind_address.sin_addr.s_addr = htonl(INADDR_ANY); // Listening on all interfaces
+    bind_address.sin_port = htons(0); // Listening on any port by default
     
+    // set peer address
     struct sockaddr_in peer_address;
+    memset(&peer_address, 0, sizeof(peer_address));
     peer_address.sin_family = AF_INET;   // IPv4
 
-    // load program args
+    // Load program args.
     int opt;
     bool a_appeared = false;
     bool r_appeared = false;
@@ -56,7 +65,7 @@ int main(int argc, char *argv[]) {
                 break;
             case 'p': // Bind port 
                 printf("Option p with argument: %s\n", optarg);
-                bind_address.sin_port = read_port(optarg);
+                bind_address.sin_port = htons(read_port(optarg));
                 break;
             case 'a': // Peer address
                 printf("Option a with argument: %s\n", optarg);
@@ -80,24 +89,61 @@ int main(int argc, char *argv[]) {
 
                 a_appeared = true;
                 break;
-            case 'r':
+            case 'r': // Peer port
                 printf("Option r with argument: %s\n", optarg);
-
-                peer_address.sin_port = read_port(optarg);
-
+                peer_address.sin_port = htons(read_port(optarg));
                 r_appeared = true;
                 break;
         }
     }
 
-    // check if -a and -r come in pairs
+    // Check if -a and -r come in pairs
     if (a_appeared && !r_appeared) {
-        fprintf(stderr, "ERROR: -a option requires -r option\n");
-        exit(1);
+        fatal("ERROR: -a option requires -r option");
     } else if (!a_appeared && r_appeared) {
-        fprintf(stderr, "ERROR: -r option requires -a option\n");
-        exit(1);
-    } else {
-        printf("Option a and r are paired\n");
+        fatal("ERROR: -r option requires -a option\n");
+    } 
+
+    // Create a socket
+    int socket_fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (socket_fd < 0) {
+        syserr("cannot create a socket");
     }
+
+    fcntl(socket_fd, F_SETFL, O_NONBLOCK); // Set non-blocking mode
+
+    // Bind socket to concrete address
+    if (bind(socket_fd, (struct sockaddr *) &bind_address, (socklen_t) sizeof(bind_address)) < 0) {
+        syserr("cannot bind socket");
+    }
+
+
+    if (a_appeared && r_appeared) { // Send HELLO to peer
+        message[message_size++] = HELLO;
+
+        ssize_t bytes_sent = sendto(socket_fd, message, message_size,
+                0, (struct sockaddr *) &peer_address, sizeof(peer_address));
+
+        if (bytes_sent < 0) {
+            syserr("sendto");
+        } else if (bytes_sent != message_size) {
+            fatal("incomplete sending");
+        }
+
+        message_size--; // Remove HELLO from message buffer
+
+        char peer_ip_str[INET_ADDRSTRLEN];
+        char bind_ip_str[INET_ADDRSTRLEN];
+        
+        // Print control information
+        inet_ntop(AF_INET, &peer_address.sin_addr, peer_ip_str, sizeof(peer_ip_str));
+        uint16_t peer_port = ntohs(peer_address.sin_port);
+        inet_ntop(AF_INET, &bind_address.sin_addr, bind_ip_str, sizeof(bind_ip_str));
+        uint16_t bind_port = ntohs(bind_address.sin_port);
+
+        printf("[%s:%" PRIu16 "] Sent HELLO to %s:%" PRIu16 "\n", 
+            bind_ip_str, bind_port, peer_ip_str, peer_port);
+    }
+
+    return 0;
 }
