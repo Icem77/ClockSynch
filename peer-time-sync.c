@@ -83,7 +83,7 @@ int main(int argc, char *argv[]) {
             case 'r':
                 printf("Option r with argument: %s\n", optarg);
 
-                peer_address.sin_port = read_port(optarg); // port from the command line
+                peer_address.sin_port = read_port(optarg);
 
                 r_appeared = true;
                 break;
