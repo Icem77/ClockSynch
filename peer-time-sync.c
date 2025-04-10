@@ -7,6 +7,8 @@
 #include <limits.h> // limits macros
 #include <string.h> // memset
 #include <fcntl.h> // non-blocking socket
+#include <time.h> // clock_gettime, struct timespec
+#include <signal.h> // signal handling for CTRL+C
 
 #include <sys/types.h> // skopiowane straigh z labow (moze cos stad warto usunac?)
 #include <sys/socket.h>
@@ -19,6 +21,22 @@
 #define HELLO 1
 #define MAX_MSG_SIZE 1024
 
+static volatile sig_atomic_t keepRunning = 1;
+
+void handle_sigint(int signo) {
+    keepRunning = 0;  // Set flag to stop the loop
+}
+
+static uint64_t current_time_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+
+    // Konwersja seconds -> ms & nanoseconds -> ms
+    uint64_t ms = (uint64_t)ts.tv_sec * 1000
+                + (uint64_t)(ts.tv_nsec / 1000000);
+    return ms;
+}
+
 static uint16_t read_port(char const *string) {
     char *endptr;
     errno = 0;
@@ -30,6 +48,14 @@ static uint16_t read_port(char const *string) {
 }
 
 int main(int argc, char *argv[]) {
+    // Add SIGINT handler
+    if (signal(SIGINT, handle_sigint) == SIG_ERR) {
+        fprintf(stderr, "ERROR: cannot set signal handler\n");
+    }
+
+    // Start measuring time
+    uint64_t start_time_ms = current_time_ms();
+
     uint8_t synchronized = 255; // Set default synchronization level
     char message[MAX_MSG_SIZE]; // Create buffer for messages
     memset(message, 0, sizeof(message)); 
@@ -144,6 +170,16 @@ int main(int argc, char *argv[]) {
         printf("[%s:%" PRIu16 "] Sent HELLO to %s:%" PRIu16 "\n", 
             bind_ip_str, bind_port, peer_ip_str, peer_port);
     }
+
+    // Start receiving messages
+    while (keepRunning) {
+
+    }
+
+    if (close(socket_fd) < 0) {
+        syserr("cannot close socket");
+    }
+    printf("Connection socket closed.\n");
 
     return 0;
 }
