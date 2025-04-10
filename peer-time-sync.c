@@ -18,12 +18,23 @@
 
 #include "err.h" // error handling
 
-#define HELLO 1
+#define HELLO 1 // define message types
+#define HELLO_REPLY 2
+#define CONNECT 3
+#define ACK_CONNECT 4
+#define SYNC_START 11
+#define DELAY_REQUEST 12
+#define DELAY_RESPONSE 13
+#define LEADER 21
+#define GET_TIME 31
+#define TIME 32
+
 #define MAX_MSG_SIZE 1024
 
 static volatile sig_atomic_t keepRunning = 1;
 
 void handle_sigint(int signo) {
+    (void) signo; // Avoid unused parameter warning
     keepRunning = 0;  // Set flag to stop the loop
 }
 
@@ -156,8 +167,6 @@ int main(int argc, char *argv[]) {
             fatal("incomplete sending");
         }
 
-        message_size--; // Remove HELLO from message buffer
-
         char peer_ip_str[INET_ADDRSTRLEN];
         char bind_ip_str[INET_ADDRSTRLEN];
         
@@ -173,6 +182,69 @@ int main(int argc, char *argv[]) {
 
     // Start receiving messages
     while (keepRunning) {
+        struct sockaddr_in sender_address;
+        socklen_t sender_address_len = (socklen_t) sizeof(sender_address);
+        ssize_t bytes_received = recvfrom(socket_fd, message, sizeof(message),
+                0, (struct sockaddr *) &sender_address, &sender_address_len);
+
+        if (bytes_received == 0) {
+            msg_error("");        
+        }
+
+        ssize_t bytes_red = 0;
+        uint8_t message_type = (uint8_t) message[bytes_red++];
+        message_size = 0;
+
+        switch (message_type) {
+            case GET_TIME:
+                // prepare message
+                message[message_size++] = TIME;
+                message[message_size++] = synchronized;
+                uint64_t net_time = htobe64(start_time_ms - current_time_ms());
+                memcpy(message + message_size, &net_time, sizeof(net_time));
+                message_size += sizeof(net_time);
+
+                ssize_t sent = sendto(socket_fd, message, message_size, 0, 
+                    (struct sockaddr*) &sender_address, sender_address_len);
+
+                if (sent < 0) {
+                    syserr("sendto TIME");
+                } else if ((ssize_t)sent != message_size) {
+                    fatal("incomplete TIME send");
+                }
+                
+                // Print control information
+                char sender_ip_str[INET_ADDRSTRLEN];
+                char bind_ip_str[INET_ADDRSTRLEN];
+
+                inet_ntop(AF_INET, &sender_address.sin_addr, sender_ip_str, sizeof(sender_ip_str));
+                uint16_t sender_port = ntohs(sender_address.sin_port);
+                inet_ntop(AF_INET, &bind_address.sin_addr, bind_ip_str, sizeof(bind_ip_str));
+                uint16_t bind_port = ntohs(bind_address.sin_port);
+
+                printf("[%s:%" PRIu16 "] Sent TIME to %s:%" PRIu16 "\n", 
+                    bind_ip_str, bind_port, sender_ip_str, sender_port);
+
+                break;
+            case LEADER:
+                break;
+            case HELLO:
+                break;
+            case HELLO_REPLY:
+                break;
+            case CONNECT:
+                break;
+            case ACK_CONNECT:
+                break;
+            case SYNC_START:
+                break;
+            case DELAY_REQUEST:
+                break;
+            case DELAY_RESPONSE:
+                break;
+            
+
+        }
 
     }
 
