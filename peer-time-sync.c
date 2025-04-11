@@ -228,7 +228,7 @@ int main(int argc, char *argv[]) {
         }
 
         known_peer_list_add(&peer_list, peer_address.sin_addr.s_addr,
-                peer_address.sin_port); // add peer to list
+                peer_address.sin_port); // add peer to list (do not confirm connection yet)
 
         char peer_ip_str[INET_ADDRSTRLEN];
         char bind_ip_str[INET_ADDRSTRLEN];
@@ -289,26 +289,77 @@ int main(int argc, char *argv[]) {
                     bind_ip_str, bind_port, sender_ip_str, sender_port);
 
                 break;
-            case LEADER:
-                break;
             case HELLO:
+                // TODO: add peer to the list of known peers (if he was not already there)
+                //       and mark him as connected!
+
+                // TODO: send HELLO_REPLY to the peer
                 break;
             case HELLO_REPLY:
                 if (a_appeared && r_appeared && sender_address.sin_addr.s_addr == peer_address.sin_addr.s_addr &&
                     sender_address.sin_port == peer_address.sin_port) {
-                    // mark peer as connected after veryfiing sender    
-                    known_peer_mark_conn_ack(known_peer_list_find(peer_list,
-                        sender_address.sin_addr.s_addr, sender_address.sin_port));
+                    // mark peer as connected after veryfiing sender
+                    struct known_peer *peer = known_peer_list_find(peer_list,
+                        sender_address.sin_addr.s_addr, sender_address.sin_port);
+                    
+                    if (peer->connection_confirmed) {
+                        msg_error("Peer already connected by HELLO_REPLY");
+                    } else {
+                        known_peer_mark_conn_ack(peer);
+                    }
+                    
+                    // TODO: Check if peer was not already connected
                 } else {
-                    char const *msg_pref[ERR_MSG_SIZE];
-                    memcpy(msg_pref, message, min(ERR_MSG_SIZE - 1, bytes_received));
-                    msg_pref[min(ERR_MSG_SIZE - 1, bytes_received)] = '\0';
-                    msg_error(msg_pref); // HELLO_REPLY from unexpected peer
+                    msg_error("HELLO_REPLY from unexpected peer");
                 }
+
+                // TODO: add sended peers to the list of known peers
+
+                // TODO: send CONNECT to newly added peers
                 break;
             case CONNECT:
+                struct known_peer *peer = known_peer_list_find(peer_list,
+                        sender_address.sin_addr.s_addr, sender_address.sin_port);
+                
+                if (peer == NULL) {
+                    known_peer_list_add(&peer_list, sender_address.sin_addr.s_addr,
+                        sender_address.sin_port); // add peer to list 
+                
+                    known_peer_mark_conn_ack(known_peer_list_find(peer_list,
+                        sender_address.sin_addr.s_addr, sender_address.sin_port)); // confirm connection
+
+                    // prepare message
+                    message[message_size++] = ACK_CONNECT;
+
+                    ssize_t sent = sendto(socket_fd, message, message_size, 0, 
+                        (struct sockaddr*) &sender_address, sender_address_len);
+
+                    if (sent < 0) {
+                        syserr("sendto ACK_CONNECT");
+                    } else if ((ssize_t)sent != message_size) {
+                        fatal("incomplete ACK_CONNECT send");
+                    }
+                    
+                    // Print control information
+                    char sender_ip_str[INET_ADDRSTRLEN];
+                    char bind_ip_str[INET_ADDRSTRLEN];
+
+                    inet_ntop(AF_INET, &sender_address.sin_addr, sender_ip_str, sizeof(sender_ip_str));
+                    uint16_t sender_port = ntohs(sender_address.sin_port);
+                    inet_ntop(AF_INET, &bind_address.sin_addr, bind_ip_str, sizeof(bind_ip_str));
+                    uint16_t bind_port = ntohs(bind_address.sin_port);
+
+                    printf("[%s:%" PRIu16 "] Sent ACK_CONNECT to %s:%" PRIu16 "\n", 
+                        bind_ip_str, bind_port, sender_ip_str, sender_port);
+                } else { // CONNECT from already connected peer
+                    msg_error("CONNECT from already connected peer");
+                }
+                
                 break;
             case ACK_CONNECT:
+                // TODO: mark peer as connected (if he was on the list!)
+                break;
+            case LEADER:
                 break;
             case SYNC_START:
                 break;
