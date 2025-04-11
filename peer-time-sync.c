@@ -30,6 +30,7 @@
 #define TIME 32
 
 #define MAX_MSG_SIZE 1024
+#define ERR_MSG_SIZE 11
 
 static volatile sig_atomic_t keepRunning = 1;
 
@@ -58,28 +59,87 @@ static uint16_t read_port(char const *string) {
     return (uint16_t) port;
 }
 
+struct known_peer {
+    struct sockaddr_in address;
+    bool connection_confirmed;
+
+    struct known_peer *next;
+};
+
+static struct known_peer* known_peer_list_init() {
+    struct known_peer *head = NULL;
+    return head;
+}
+
+bool known_peer_equals(struct known_peer *p, in_addr_t ip, uint16_t port) {
+    if (p->address.sin_addr.s_addr == ip && p->address.sin_port == port) {
+        return true;
+    }
+    return false;
+}
+
+void known_peer_mark_conn_ack(struct known_peer *peer) {
+    peer->connection_confirmed = true;
+}
+
+void known_peer_list_add(struct known_peer **head, in_addr_t ip, uint16_t port) {
+    struct known_peer *new_peer = malloc(sizeof(struct known_peer));
+    if (new_peer == NULL) {
+        syserr("malloc");
+    }
+
+    memset(new_peer, 0, sizeof(*new_peer));
+    new_peer->address.sin_family = AF_INET; // IPv4
+    new_peer->address.sin_addr.s_addr = ip;
+    new_peer->address.sin_port = port;
+
+    new_peer->connection_confirmed = false;
+    new_peer->next = *head;
+
+    *head = new_peer;
+}
+
+struct known_peer* known_peer_list_find(struct known_peer *head, in_addr_t ip, uint16_t port) {
+    struct known_peer *curr = head;
+    while (curr != NULL && !known_peer_equals(curr, ip, port)) {
+        curr = curr->next;
+    }
+
+    return curr;
+}
+
+void known_peer_list_free(struct known_peer *head) {
+    struct known_peer *curr = head;
+    while (curr != NULL) {
+        struct known_peer *next = curr->next;
+        free(curr);
+        curr = next;
+    }
+}
+
 int main(int argc, char *argv[]) {
     // Add SIGINT handler
     if (signal(SIGINT, handle_sigint) == SIG_ERR) {
         fprintf(stderr, "ERROR: cannot set signal handler\n");
     }
 
-    // Start measuring time
-    uint64_t start_time_ms = current_time_ms();
+    uint64_t start_time_ms = current_time_ms(); // Start measuring time
+
+    struct known_peer *peer_list = known_peer_list_init(); // Initialize peer list
 
     uint8_t synchronized = 255; // Set default synchronization level
     char message[MAX_MSG_SIZE]; // Create buffer for messages
     memset(message, 0, sizeof(message)); 
     ssize_t message_size = 0;
 
-    // set bind address
+    // Set bind address
     struct sockaddr_in bind_address;
     memset(&bind_address, 0, sizeof(bind_address));
     bind_address.sin_family = AF_INET; // IPv4
     bind_address.sin_addr.s_addr = htonl(INADDR_ANY); // Listening on all interfaces
     bind_address.sin_port = htons(0); // Listening on any port by default
     
-    // set peer address
+    // Set peer address
     struct sockaddr_in peer_address;
     memset(&peer_address, 0, sizeof(peer_address));
     peer_address.sin_family = AF_INET;   // IPv4
@@ -107,6 +167,7 @@ int main(int argc, char *argv[]) {
             case 'a': // Peer address
                 printf("Option a with argument: %s\n", optarg);
                 
+                // Load IP / hostname of a peer
                 struct addrinfo hints;
                 memset(&hints, 0, sizeof(struct addrinfo));
                 hints.ai_family = AF_INET; // IPv4
@@ -154,7 +215,6 @@ int main(int argc, char *argv[]) {
         syserr("cannot bind socket");
     }
 
-
     if (a_appeared && r_appeared) { // Send HELLO to peer
         message[message_size++] = HELLO;
 
@@ -166,6 +226,9 @@ int main(int argc, char *argv[]) {
         } else if (bytes_sent != message_size) {
             fatal("incomplete sending");
         }
+
+        known_peer_list_add(&peer_list, peer_address.sin_addr.s_addr,
+                peer_address.sin_port); // add peer to list
 
         char peer_ip_str[INET_ADDRSTRLEN];
         char bind_ip_str[INET_ADDRSTRLEN];
@@ -231,6 +294,17 @@ int main(int argc, char *argv[]) {
             case HELLO:
                 break;
             case HELLO_REPLY:
+                if (a_appeared && r_appeared && sender_address.sin_addr.s_addr == peer_address.sin_addr.s_addr &&
+                    sender_address.sin_port == peer_address.sin_port) {
+                    // mark peer as connected after veryfiing sender    
+                    known_peer_mark_conn_ack(known_peer_list_find(peer_list,
+                        sender_address.sin_addr.s_addr, sender_address.sin_port));
+                } else {
+                    char const *msg_pref[ERR_MSG_SIZE];
+                    memcpy(msg_pref, message, min(ERR_MSG_SIZE - 1, bytes_received));
+                    msg_pref[min(ERR_MSG_SIZE - 1, bytes_received)] = '\0';
+                    msg_error(msg_pref); // HELLO_REPLY from unexpected peer
+                }
                 break;
             case CONNECT:
                 break;
