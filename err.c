@@ -43,4 +43,5 @@ noreturn void msg_error(const char* fmt, ...) {
     va_end(fmt_args);
 
     fprintf(stderr, "\n");
+
 }

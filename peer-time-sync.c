@@ -59,6 +59,27 @@ static uint16_t read_port(char const *string) {
     return (uint16_t) port;
 }
 
+void send_check(ssize_t bytes_sent, ssize_t message_size) {
+    if (bytes_sent < 0) {
+        syserr("sendto");
+    } else if (bytes_sent != message_size) {
+        fatal("incomplete sending");
+    }
+}
+
+void control_message(uint8_t message_type, struct sockaddr_in *sender_address, struct sockaddr_in *reciever_address) {
+    char sender_ip_str[INET_ADDRSTRLEN];
+    char reciever_ip_str[INET_ADDRSTRLEN];
+    
+    inet_ntop(AF_INET, &(*sender_address).sin_addr, sender_ip_str, sizeof(sender_ip_str));
+    uint16_t sender_port = ntohs((*sender_address).sin_port);
+    inet_ntop(AF_INET, &(*reciever_address).sin_addr, reciever_ip_str, sizeof(reciever_ip_str));
+    uint16_t reciever_port = ntohs((*reciever_address).sin_port);
+
+    printf("[%s:%" PRIu16 "] Sent %" PRIu8 " to %s:%" PRIu16 "\n", 
+        sender_ip_str, sender_port, message_type, reciever_ip_str, reciever_port);
+}
+
 struct known_peer {
     struct sockaddr_in address;
     bool connection_confirmed;
@@ -144,7 +165,7 @@ int main(int argc, char *argv[]) {
     memset(&peer_address, 0, sizeof(peer_address));
     peer_address.sin_family = AF_INET;   // IPv4
 
-    // Load program args.
+    // Load program args
     int opt;
     bool a_appeared = false;
     bool r_appeared = false;
@@ -195,11 +216,11 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    // Check if -a and -r come in pairs
+    // Check if -a and -r come in pair
     if (a_appeared && !r_appeared) {
-        fatal("ERROR: -a option requires -r option");
+        fatal("-a option requires -r option");
     } else if (!a_appeared && r_appeared) {
-        fatal("ERROR: -r option requires -a option\n");
+        fatal("-r option requires -a option\n");
     } 
 
     // Create a socket
@@ -230,17 +251,7 @@ int main(int argc, char *argv[]) {
         known_peer_list_add(&peer_list, peer_address.sin_addr.s_addr,
                 peer_address.sin_port); // add peer to list (do not confirm connection yet)
 
-        char peer_ip_str[INET_ADDRSTRLEN];
-        char bind_ip_str[INET_ADDRSTRLEN];
-        
-        // Print control information
-        inet_ntop(AF_INET, &peer_address.sin_addr, peer_ip_str, sizeof(peer_ip_str));
-        uint16_t peer_port = ntohs(peer_address.sin_port);
-        inet_ntop(AF_INET, &bind_address.sin_addr, bind_ip_str, sizeof(bind_ip_str));
-        uint16_t bind_port = ntohs(bind_address.sin_port);
-
-        printf("[%s:%" PRIu16 "] Sent HELLO to %s:%" PRIu16 "\n", 
-            bind_ip_str, bind_port, peer_ip_str, peer_port);
+        control_message(HELLO, &bind_address, &peer_address);
     }
 
     // Start receiving messages
@@ -270,24 +281,9 @@ int main(int argc, char *argv[]) {
                 ssize_t sent = sendto(socket_fd, message, message_size, 0, 
                     (struct sockaddr*) &sender_address, sender_address_len);
 
-                if (sent < 0) {
-                    syserr("sendto TIME");
-                } else if ((ssize_t)sent != message_size) {
-                    fatal("incomplete TIME send");
-                }
+                send_check(sent, message_size);
                 
-                // Print control information
-                char sender_ip_str[INET_ADDRSTRLEN];
-                char bind_ip_str[INET_ADDRSTRLEN];
-
-                inet_ntop(AF_INET, &sender_address.sin_addr, sender_ip_str, sizeof(sender_ip_str));
-                uint16_t sender_port = ntohs(sender_address.sin_port);
-                inet_ntop(AF_INET, &bind_address.sin_addr, bind_ip_str, sizeof(bind_ip_str));
-                uint16_t bind_port = ntohs(bind_address.sin_port);
-
-                printf("[%s:%" PRIu16 "] Sent TIME to %s:%" PRIu16 "\n", 
-                    bind_ip_str, bind_port, sender_ip_str, sender_port);
-
+                control_message(TIME, &bind_address, &sender_address);
                 break;
             case HELLO:
                 // TODO: add peer to the list of known peers (if he was not already there)
@@ -304,6 +300,7 @@ int main(int argc, char *argv[]) {
                     
                     if (peer->connection_confirmed) {
                         msg_error("Peer already connected by HELLO_REPLY");
+                        break;
                     } else {
                         known_peer_mark_conn_ack(peer);
                     }
@@ -334,23 +331,9 @@ int main(int argc, char *argv[]) {
                     ssize_t sent = sendto(socket_fd, message, message_size, 0, 
                         (struct sockaddr*) &sender_address, sender_address_len);
 
-                    if (sent < 0) {
-                        syserr("sendto ACK_CONNECT");
-                    } else if ((ssize_t)sent != message_size) {
-                        fatal("incomplete ACK_CONNECT send");
-                    }
+                    send_check(sent, message_size);
                     
-                    // Print control information
-                    char sender_ip_str[INET_ADDRSTRLEN];
-                    char bind_ip_str[INET_ADDRSTRLEN];
-
-                    inet_ntop(AF_INET, &sender_address.sin_addr, sender_ip_str, sizeof(sender_ip_str));
-                    uint16_t sender_port = ntohs(sender_address.sin_port);
-                    inet_ntop(AF_INET, &bind_address.sin_addr, bind_ip_str, sizeof(bind_ip_str));
-                    uint16_t bind_port = ntohs(bind_address.sin_port);
-
-                    printf("[%s:%" PRIu16 "] Sent ACK_CONNECT to %s:%" PRIu16 "\n", 
-                        bind_ip_str, bind_port, sender_ip_str, sender_port);
+                    control_message(ACK_CONNECT, &bind_address, &sender_address);
                 } else { // CONNECT from already connected peer
                     msg_error("CONNECT from already connected peer");
                 }
@@ -377,6 +360,13 @@ int main(int argc, char *argv[]) {
         syserr("cannot close socket");
     }
     printf("Connection socket closed.\n");
+
+    known_peer_list_free(peer_list);
+    if (peer_list == NULL) {
+        printf("Peer list freed.\n");
+    } else {
+        printf("cannot free peer list\n");
+    }
 
     return 0;
 }
