@@ -31,6 +31,8 @@
 
 #define MAX_MSG_SIZE 1024
 #define ERR_MSG_SIZE 11
+#define PEER_ADDRESS_LENGTH 4
+#define PEER_ADDRESS_LENGTH_SIZE 1
 
 static volatile sig_atomic_t keepRunning = 1;
 
@@ -99,11 +101,29 @@ bool known_peer_equals(struct known_peer *p, in_addr_t ip, uint16_t port) {
     return false;
 }
 
-void known_peer_mark_conn_ack(struct known_peer *peer) {
+void known_peer_mark_conn_ack(struct known_peer *peer, char hello_reply_msg[MAX_MSG_SIZE], 
+        ssize_t *hello_reply_size, uint16_t *count) {
+    
     peer->connection_confirmed = true;
+
+    // Add peer to the HELLO_REPLY message
+    *count = ntohs(*count);
+    (*count)++;
+    *count = htons(*count);
+    memcpy(hello_reply_msg + 1, count, sizeof(*count)); // Update number of known peers
+
+    uint8_t peer_address_length = PEER_ADDRESS_LENGTH;
+    memcpy(hello_reply_msg + *hello_reply_size, &peer_address_length, PEER_ADDRESS_LENGTH_SIZE); // Add new address length
+    (*hello_reply_size) += PEER_ADDRESS_LENGTH_SIZE;
+
+    memcpy(hello_reply_msg + *hello_reply_size, &peer->address.sin_addr.s_addr, sizeof(peer->address.sin_addr.s_addr)); // Add new address
+    (*hello_reply_size) += sizeof(peer->address.sin_addr.s_addr);
+
+    memcpy(hello_reply_msg + *hello_reply_size, &peer->address.sin_port, sizeof(peer->address.sin_port)); // Add new port
+    (*hello_reply_size) += sizeof(peer->address.sin_port);
 }
 
-void known_peer_list_add(struct known_peer **head, in_addr_t ip, uint16_t port) {
+struct known_peer* known_peer_list_add(struct known_peer **head, in_addr_t ip, uint16_t port) {
     struct known_peer *new_peer = malloc(sizeof(struct known_peer));
     if (new_peer == NULL) {
         syserr("malloc");
@@ -118,6 +138,8 @@ void known_peer_list_add(struct known_peer **head, in_addr_t ip, uint16_t port) 
     new_peer->next = *head;
 
     *head = new_peer;
+
+    return new_peer;
 }
 
 struct known_peer* known_peer_list_find(struct known_peer *head, in_addr_t ip, uint16_t port) {
@@ -149,9 +171,19 @@ int main(int argc, char *argv[]) {
     struct known_peer *peer_list = known_peer_list_init(); // Initialize peer list
 
     uint8_t synchronized = 255; // Set default synchronization level
+
     char message[MAX_MSG_SIZE]; // Create buffer for messages
     memset(message, 0, sizeof(message)); 
     ssize_t message_size = 0;
+
+    char hello_reply_msg[MAX_MSG_SIZE]; // Separate buffer for HELLO handling
+    uint16_t count = 0; // Number of known peers
+    ssize_t hello_reply_size = 0;
+
+    memset(hello_reply_msg, 0, sizeof(hello_reply_msg));
+    hello_reply_msg[hello_reply_size++] = HELLO_REPLY; // Set message type
+    memcpy(hello_reply_msg + hello_reply_size, &count, sizeof(count)); // Set number of known peers to zero
+    hello_reply_size += sizeof(count); // Update message size
 
     // Set bind address
     struct sockaddr_in bind_address;
@@ -254,6 +286,8 @@ int main(int argc, char *argv[]) {
         control_message(HELLO, &bind_address, &peer_address);
     }
 
+    struct known_peer *peer;
+    ssize_t sent;
     // Start receiving messages
     while (keepRunning) {
         struct sockaddr_in sender_address;
@@ -261,7 +295,9 @@ int main(int argc, char *argv[]) {
         ssize_t bytes_received = recvfrom(socket_fd, message, sizeof(message),
                 0, (struct sockaddr *) &sender_address, &sender_address_len);
 
-        if (bytes_received == 0) {
+        if (bytes_received == -1) {
+            continue;
+        } else if (bytes_received == 0) {
             msg_error("");        
         }
 
@@ -278,7 +314,7 @@ int main(int argc, char *argv[]) {
                 memcpy(message + message_size, &net_time, sizeof(net_time));
                 message_size += sizeof(net_time);
 
-                ssize_t sent = sendto(socket_fd, message, message_size, 0, 
+                sent = sendto(socket_fd, message, message_size, 0, 
                     (struct sockaddr*) &sender_address, sender_address_len);
 
                 send_check(sent, message_size);
@@ -289,23 +325,41 @@ int main(int argc, char *argv[]) {
                 // TODO: add peer to the list of known peers (if he was not already there)
                 //       and mark him as connected!
 
-                // TODO: send HELLO_REPLY to the peer
+                peer = known_peer_list_find(peer_list,
+                        sender_address.sin_addr.s_addr, sender_address.sin_port);
+
+                if (peer == NULL) {
+                    sent = sendto(socket_fd, hello_reply_msg, hello_reply_size, 0, 
+                        (struct sockaddr*) &sender_address, sender_address_len);
+    
+                    send_check(sent, hello_reply_size);
+    
+                    control_message(HELLO_REPLY, &bind_address, &sender_address);
+
+                    known_peer_mark_conn_ack(known_peer_list_add(&peer_list, sender_address.sin_addr.s_addr,
+                        sender_address.sin_port), hello_reply_msg, &hello_reply_size, &count); // confirm connection
+                } else {
+                    printf("HELLO from already connected peer");
+                    exit(1); // DO USUNIECIE
+                    break;
+                }
+
                 break;
             case HELLO_REPLY:
+                // check if we sent HELLO to this peer
                 if (a_appeared && r_appeared && sender_address.sin_addr.s_addr == peer_address.sin_addr.s_addr &&
                     sender_address.sin_port == peer_address.sin_port) {
-                    // mark peer as connected after veryfiing sender
-                    struct known_peer *peer = known_peer_list_find(peer_list,
+
+                    // check if peer was not already connected
+                    peer = known_peer_list_find(peer_list,
                         sender_address.sin_addr.s_addr, sender_address.sin_port);
                     
                     if (peer->connection_confirmed) {
                         msg_error("Peer already connected by HELLO_REPLY");
                         break;
                     } else {
-                        known_peer_mark_conn_ack(peer);
+                        known_peer_mark_conn_ack(peer, hello_reply_msg, &hello_reply_size, &count); // confirm connection
                     }
-                    
-                    // TODO: Check if peer was not already connected
                 } else {
                     msg_error("HELLO_REPLY from unexpected peer");
                 }
@@ -315,20 +369,17 @@ int main(int argc, char *argv[]) {
                 // TODO: send CONNECT to newly added peers
                 break;
             case CONNECT:
-                struct known_peer *peer = known_peer_list_find(peer_list,
+                peer = known_peer_list_find(peer_list,
                         sender_address.sin_addr.s_addr, sender_address.sin_port);
                 
                 if (peer == NULL) {
-                    known_peer_list_add(&peer_list, sender_address.sin_addr.s_addr,
-                        sender_address.sin_port); // add peer to list 
-                
-                    known_peer_mark_conn_ack(known_peer_list_find(peer_list,
-                        sender_address.sin_addr.s_addr, sender_address.sin_port)); // confirm connection
+                    known_peer_mark_conn_ack(known_peer_list_add(&peer_list, sender_address.sin_addr.s_addr,
+                        sender_address.sin_port), hello_reply_msg, &hello_reply_size, &count); // confirm connection
 
-                    // prepare message
+                    // prepare ACK_CONNECT message
                     message[message_size++] = ACK_CONNECT;
 
-                    ssize_t sent = sendto(socket_fd, message, message_size, 0, 
+                    sent = sendto(socket_fd, message, message_size, 0, 
                         (struct sockaddr*) &sender_address, sender_address_len);
 
                     send_check(sent, message_size);
