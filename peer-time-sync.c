@@ -286,6 +286,7 @@ int main(int argc, char *argv[]) {
 
     struct known_peer *peer;
     ssize_t sent;
+    uint32_t leader_start_timestamp;
     // Start receiving messages
     while (keepRunning) {
         struct sockaddr_in sender_address;
@@ -308,7 +309,7 @@ int main(int argc, char *argv[]) {
                 // prepare message
                 message[message_size++] = TIME;
                 message[message_size++] = synchronized;
-                uint64_t net_time = htobe64(start_time_ms - current_time_ms());
+                uint64_t net_time = htobe64(start_time_ms - current_time_ms()); // TODO: korekta o offset
                 memcpy(message + message_size, &net_time, sizeof(net_time));
                 message_size += sizeof(net_time);
 
@@ -358,8 +359,6 @@ int main(int argc, char *argv[]) {
                     msg_error("HELLO_REPLY from unexpected peer");
                     break;
                 }
-
-                // TODO: add sended peers to the list of known peers
 
                 // 1. read peers count
                 uint16_t peers_count;
@@ -436,6 +435,21 @@ int main(int argc, char *argv[]) {
                 }
                 break;
             case LEADER:
+                uint8_t sync = (uint8_t) message[bytes_red++]; 
+
+                if (sync == 0) {
+                    synchronized = 0;
+                    leader_start_timestamp = current_time_ms();
+                } else if (sync == 255) {
+                    if (synchronized == 0) {
+                        synchronized = 255;
+                    } else {
+                        printf("already not a LEADER\n");
+                    }
+                } else {
+                    printf("unknown 'synchronized' in LEADER message\n");
+                }
+
                 break;
             case SYNC_START:
                 break;
@@ -443,8 +457,6 @@ int main(int argc, char *argv[]) {
                 break;
             case DELAY_RESPONSE:
                 break;
-            
-
         }
 
     }
