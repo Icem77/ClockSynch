@@ -17,6 +17,7 @@
 #include <arpa/inet.h>
 
 #include "err.h" // error handling
+#include "known-peer.h" // peer list handling
 
 #define HELLO 1 // define message types
 #define HELLO_REPLY 2
@@ -31,8 +32,6 @@
 
 #define MAX_MSG_SIZE 1024
 #define ERR_MSG_SIZE 11
-#define PEER_ADDRESS_LENGTH 4
-#define PEER_ADDRESS_LENGTH_SIZE 1
 #define PEER_COUNT_BYTE_SIZE 2
 #define PORT_BYTE_SIZE 2
 
@@ -82,80 +81,6 @@ void control_message(uint8_t message_type, struct sockaddr_in *sender_address, s
 
     printf("[%s:%" PRIu16 "] Sent %" PRIu8 " to %s:%" PRIu16 "\n", 
         sender_ip_str, sender_port, message_type, reciever_ip_str, reciever_port);
-}
-
-struct known_peer {
-    struct sockaddr_in address;
-    bool connection_confirmed;
-
-    struct known_peer *next;
-};
-
-static struct known_peer* known_peer_list_init() {
-    struct known_peer *head = NULL;
-    return head;
-}
-
-bool known_peer_equals(struct known_peer *p, in_addr_t ip, uint16_t port) {
-    return (p->address.sin_addr.s_addr == ip && p->address.sin_port == port);
-}
-
-void known_peer_mark_conn_ack(struct known_peer *peer, char hello_reply_msg[MAX_MSG_SIZE], 
-        ssize_t *hello_reply_size, uint16_t *count) {
-    
-    peer->connection_confirmed = true;
-
-    // Add peer to the HELLO_REPLY message
-    *count = ntohs(*count);
-    (*count)++;
-    *count = htons(*count);
-    memcpy(hello_reply_msg + 1, count, sizeof(*count)); // Update number of known peers
-
-    uint8_t peer_address_length = PEER_ADDRESS_LENGTH;
-    memcpy(hello_reply_msg + *hello_reply_size, &peer_address_length, PEER_ADDRESS_LENGTH_SIZE); // Add new address length
-    (*hello_reply_size) += PEER_ADDRESS_LENGTH_SIZE;
-
-    memcpy(hello_reply_msg + *hello_reply_size, &peer->address.sin_addr.s_addr, sizeof(peer->address.sin_addr.s_addr)); // Add new address
-    (*hello_reply_size) += sizeof(peer->address.sin_addr.s_addr);
-
-    memcpy(hello_reply_msg + *hello_reply_size, &peer->address.sin_port, sizeof(peer->address.sin_port)); // Add new port
-    (*hello_reply_size) += sizeof(peer->address.sin_port);
-}
-
-struct known_peer* known_peer_list_add(struct known_peer **head, in_addr_t ip, uint16_t port) {
-    struct known_peer *new_peer = malloc(sizeof(struct known_peer));
-    if (new_peer == NULL) {
-        syserr("malloc");
-    }
-
-    memset(new_peer, 0, sizeof(*new_peer));
-    new_peer->address.sin_family = AF_INET; // IPv4
-    new_peer->address.sin_addr.s_addr = ip;
-    new_peer->address.sin_port = port;
-
-    new_peer->connection_confirmed = false;
-    new_peer->next = *head;
-
-    *head = new_peer;
-
-    return new_peer;
-}
-
-struct known_peer* known_peer_list_find(struct known_peer *head, in_addr_t ip, uint16_t port) {
-    struct known_peer *curr = head;
-    while (curr != NULL && !known_peer_equals(curr, ip, port)) {
-        curr = curr->next;
-    }
-
-    return curr;
-}
-
-void known_peer_list_free(struct known_peer **head) {
-    while (*head != NULL) {
-        struct known_peer *tmp = (*head)->next;
-        free(*head);
-        *head = tmp;
-    }
 }
 
 int main(int argc, char *argv[]) {
@@ -297,7 +222,7 @@ int main(int argc, char *argv[]) {
         if (bytes_received == -1) {
             continue;
         } else if (bytes_received == 0) {
-            msg_error("");        
+            printf("recieved empty message\n");        
         }
 
         ssize_t bytes_red = 0;
@@ -350,13 +275,13 @@ int main(int argc, char *argv[]) {
                         sender_address.sin_addr.s_addr, sender_address.sin_port);
                     
                     if (peer->connection_confirmed) {
-                        msg_error("Peer already connected by HELLO_REPLY");
+                        printf("Peer already connected by HELLO_REPLY\n");
                         break;
                     } else {
                         known_peer_mark_conn_ack(peer, hello_reply_msg, &hello_reply_size, &count); // confirm connection
                     }
                 } else {
-                    msg_error("HELLO_REPLY from unexpected peer");
+                    printf("HELLO_REPLY from unexpected peer\n");
                     break;
                 }
 
@@ -401,6 +326,7 @@ int main(int argc, char *argv[]) {
                 peer = known_peer_list_find(peer_list,
                         sender_address.sin_addr.s_addr, sender_address.sin_port);
                 
+                // TODO: co jesli dostaniemy CONNECT od osoby do ktorej wyslalismy CONNECT
                 if (peer == NULL) {
                     known_peer_mark_conn_ack(known_peer_list_add(&peer_list, sender_address.sin_addr.s_addr,
                         sender_address.sin_port), hello_reply_msg, &hello_reply_size, &count); // confirm connection
