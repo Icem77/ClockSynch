@@ -52,6 +52,10 @@ static uint64_t current_time_ms(void) {
     return ms;
 }
 
+static uint64_t time_since_ms(uint64_t start_time_ms) {
+    return current_time_ms() - start_time_ms;
+}
+
 static uint16_t read_port(char const *string) {
     char *endptr;
     errno = 0;
@@ -210,8 +214,12 @@ int main(int argc, char *argv[]) {
     }
 
     struct known_peer *peer;
+    struct known_peer *sync_peer;
     ssize_t sent;
-    uint32_t leader_start_timestamp;
+    uint64_t leader_start_timestamp = 0;
+    uint64_t sync_start_loop_timestamp = 0;
+    uint64_t offset = 0;
+    bool leader_privilage = false;
     // Start receiving messages
     while (keepRunning) {
         struct sockaddr_in sender_address;
@@ -234,7 +242,7 @@ int main(int argc, char *argv[]) {
                 // prepare message
                 message[message_size++] = TIME;
                 message[message_size++] = synchronized;
-                uint64_t net_time = htobe64(start_time_ms - current_time_ms()); // TODO: korekta o offset
+                uint64_t net_time = htobe64(time_since_ms(start_time_ms) - offset);
                 memcpy(message + message_size, &net_time, sizeof(net_time));
                 message_size += sizeof(net_time);
 
@@ -340,7 +348,7 @@ int main(int argc, char *argv[]) {
                     send_check(sent, message_size);
                     
                     control_message(ACK_CONNECT, &bind_address, &sender_address);
-                } else { // CONNECT from already connected peer
+                } else {
                     printf("CONNECT from already connected peer\n");
                     break;
                 }
@@ -354,7 +362,7 @@ int main(int argc, char *argv[]) {
                     if (peer->connection_confirmed) {
                         printf("ACK_CONNECT from already connected peer\n");
                     } else {
-                        known_peer_mark_conn_ack(peer, hello_reply_msg, &hello_reply_size, &count); // confirm connection
+                        known_peer_mark_conn_ack(peer, hello_reply_msg, &hello_reply_size, &count);
                     }
                 } else {
                     msg_error("ACK_CONNECT from unexpected peer");
@@ -366,6 +374,7 @@ int main(int argc, char *argv[]) {
                 if (sync == 0) {
                     synchronized = 0;
                     leader_start_timestamp = current_time_ms();
+                    leader_privilage = true;
                 } else if (sync == 255) {
                     if (synchronized == 0) {
                         synchronized = 255;
@@ -385,6 +394,35 @@ int main(int argc, char *argv[]) {
                 break;
         }
 
+        // start synchronization if our level is under 254
+        if ((synchronized == 0 && leader_privilage && time_since_ms(leader_start_timestamp) >= 2000) || 
+            (synchronized < 254 && time_since_ms(sync_start_loop_timestamp) >= 5000)) {
+            
+            // prepare SYNC_START message
+            message_size = 0;
+            message[message_size++] = SYNC_START;
+            message[message_size++] = synchronized;
+
+            peer = peer_list;
+            while (peer != NULL) {
+                if (peer->connection_confirmed) {
+                    uint64_t net_time = htobe64(time_since_ms(start_time_ms) - offset);
+                    memcpy(message + message_size, &net_time, sizeof(net_time));
+                    message_size += sizeof(net_time);
+
+                    sent = sendto(socket_fd, message, message_size, 0, 
+                        (struct sockaddr*) &peer->address, sizeof(peer->address));
+                        
+                    send_check(sent, message_size);
+                    
+                    peer->last_message_timestamp_ms = current_time_ms(); // update timestamp
+                    peer->delay_response_token = true; // give delay response token
+                    
+                    message_size -= sizeof(net_time); // remove timestamp from message
+                    control_message(SYNC_START, &bind_address, &peer->address);
+                }
+            }
+        }
     }
 
     if (close(socket_fd) < 0) {

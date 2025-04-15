@@ -53,6 +53,7 @@ struct known_peer* known_peer_list_add(struct known_peer **head, in_addr_t ip, u
     new_peer->address.sin_port = port;
 
     new_peer->connection_confirmed = false;
+    new_peer->delay_response_token = false;
     new_peer->next = *head;
 
     *head = new_peer;
