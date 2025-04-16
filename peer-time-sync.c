@@ -217,6 +217,8 @@ int main(int argc, char *argv[]) {
     memset(&sync_peer, 0, sizeof(sync_peer));
     sync_peer.sin_family = AF_INET; // IPv4
 
+    uint64_t last_sync_with_sync_peer = 0;
+
     struct sockaddr_in sync_peer_candidate;
     memset(&sync_peer_candidate, 0, sizeof(sync_peer_candidate));
     sync_peer_candidate.sin_family = AF_INET; // IPv4
@@ -384,6 +386,7 @@ int main(int argc, char *argv[]) {
                 if (sync == 0) {
                     synchronized = 0;
                     leader_start_timestamp = current_time_ms();
+                    printf("BECOMING LEADER\n");
                 } else if (sync == 255) {
                     if (synchronized == 0) {
                         synchronized = 255;
@@ -420,6 +423,8 @@ int main(int argc, char *argv[]) {
                             sync_peer.sin_port == sender_address.sin_port) {
                             if (peer_sync < synchronized) {
                                 during_sync = true; // we are synchronizing
+
+                                last_sync_with_sync_peer = current_time_ms(); // update timestamp
 
                                 // send DELAY_REQUEST
                                 message[message_size++] = DELAY_REQUEST;
@@ -466,6 +471,31 @@ int main(int argc, char *argv[]) {
                 }
                 break;
             case DELAY_REQUEST:
+                peer = known_peer_list_find(peer_list,
+                        sender_address.sin_addr.s_addr, sender_address.sin_port);
+                
+                if (peer == NULL || !peer->connection_confirmed || !peer->delay_response_token || 
+                    current_time_ms() - peer->last_message_timestamp_ms >= 5000) {
+                    printf("DELAY_REQUEST will not be handled\n");
+                    break;
+                }
+
+                peer->delay_response_token = false; // remove delay response token
+
+                // prepare DELAY_RESPONSE message
+                message[message_size++] = DELAY_RESPONSE;
+                message[message_size++] = synchronized;
+                uint64_t nett_time = htobe64(time_since_ms(start_time_ms) - offset);
+                memcpy(message + message_size, &nett_time, sizeof(nett_time));
+                message_size += sizeof(nett_time);
+
+                sent = sendto(socket_fd, message, message_size, 0, 
+                    (struct sockaddr*) &sender_address, sender_address_len);
+                
+                send_check(sent, message_size);
+
+                control_message(DELAY_RESPONSE, &bind_address, &sender_address);
+
                 break;
             case DELAY_RESPONSE:
                 if (during_sync && sender_address.sin_addr.s_addr == sync_peer_candidate.sin_addr.s_addr && 
@@ -492,7 +522,7 @@ int main(int argc, char *argv[]) {
 
                     synchronized = peer_sync + 1; // set new synchronization level
                 } else {
-                    printf("DELAY_RESPONSE from unexpected peer\n");
+                    printf("DELAY_RESPONSE from unexpected peer or timed out\n");
                     break;
                 }
                 break;
@@ -501,7 +531,6 @@ int main(int argc, char *argv[]) {
         // start synchronization if our level is under 254
         if ((synchronized == 0 && time_since_ms(leader_start_timestamp) >= 2000) || 
             (synchronized != 0 && synchronized < 254 && time_since_ms(sync_start_loop_timestamp) >= 5000)) {
-
             // prepare SYNC_START message
             message_size = 0;
             message[message_size++] = SYNC_START;
@@ -526,10 +555,22 @@ int main(int argc, char *argv[]) {
                     message_size -= sizeof(net_time); // remove timestamp from message
                     control_message(SYNC_START, &bind_address, &peer->address);
                 }
+
+                peer = peer->next; // go to the next peer
             }
         }
 
-        // TODO: if we are during sync check how much time passed since SYNC_START message 
+        // if we are during sync check how much time passed since SYNC_START message
+        if (during_sync && current_time_ms() - T2 >= 5000) {
+            during_sync = false; // stop synchronizing
+            printf("DELAY_RESPONSE timeout\n");
+        }
+
+        if (sync_peer_found && current_time_ms() - last_sync_with_sync_peer >= 20000) {
+            sync_peer_found = false; // stop synchronizing
+            synchronized = 255;
+            printf("Lost connection with sync_peer\n");
+        }
     }
 
     if (close(socket_fd) < 0) {
