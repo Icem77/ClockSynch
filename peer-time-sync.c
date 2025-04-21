@@ -251,6 +251,11 @@ int main(int argc, char *argv[]) {
 
         switch (message_type) {
             case GET_TIME:
+                if (bytes_received != 1) {
+                    printf("Message too long\n");
+                    break;
+                }
+
                 // prepare message
                 message[message_size++] = TIME;
                 message[message_size++] = synchronized;
@@ -266,6 +271,11 @@ int main(int argc, char *argv[]) {
                 control_message(TIME, &bind_address, &sender_address);
                 break;
             case HELLO:
+                if (bytes_received != 1) {
+                    printf("Message too long\n");
+                    break;
+                }
+
                 peer = known_peer_list_find(peer_list,
                         sender_address.sin_addr.s_addr, sender_address.sin_port);
 
@@ -311,7 +321,32 @@ int main(int argc, char *argv[]) {
                 bytes_red += PEER_COUNT_BYTE_SIZE;
                 peers_count = ntohs(peers_count);
 
-                // 2. read peers (assume data is correct)
+                // TODO: check if message has expected length
+                if (bytes_received - 3 != peers_count * 7) {
+                    printf("HELLO_REPLY message length is not correct\n");
+                    break;
+                }
+
+                // check if each peer_address_length is equal to 4
+                bool peer_address_length_ok = true;
+                for (int i = 0; i < peers_count; ++i) {
+                    uint8_t peer_address_length;
+                    memcpy(&peer_address_length, message + bytes_red, PEER_ADDRESS_LENGTH_SIZE);
+                    bytes_red += PEER_ADDRESS_LENGTH_SIZE;
+
+                    if (peer_address_length == 4) {
+                        bytes_red += 6;
+                    } else {
+                        peer_address_length_ok = false;
+                    }
+                }
+
+                if (!peer_address_length_ok) {
+                    printf("HELLO_REPLY message not correct\n");
+                    break;
+                }
+
+                // 2. read peers (data is correct)
                 for (int i = 0; i < peers_count; ++i) {
                     uint8_t new_peer_address_length;
                     memcpy(&new_peer_address_length, message + bytes_red, PEER_ADDRESS_LENGTH_SIZE);
@@ -343,11 +378,16 @@ int main(int argc, char *argv[]) {
                 }
                 break;
             case CONNECT:
+                if (bytes_received != 1) {
+                    printf("Message too long\n");
+                    break;
+                }
+
                 peer = known_peer_list_find(peer_list,
                         sender_address.sin_addr.s_addr, sender_address.sin_port);
                 
                 // TODO: co jesli dostaniemy CONNECT od osoby do ktorej wyslalismy CONNECT
-                if (peer == NULL) {
+                if (peer == NULL || !peer->connection_confirmed) {
                     known_peer_mark_conn_ack(known_peer_list_add(&peer_list, sender_address.sin_addr.s_addr,
                         sender_address.sin_port), hello_reply_msg, &hello_reply_size, &count); // confirm connection
 
@@ -367,6 +407,11 @@ int main(int argc, char *argv[]) {
                 
                 break;
             case ACK_CONNECT:
+                if (bytes_received != 1) {
+                    printf("Message too long\n");
+                    break;
+                }
+
                 peer = known_peer_list_find(peer_list,
                         sender_address.sin_addr.s_addr, sender_address.sin_port);
 
@@ -381,6 +426,11 @@ int main(int argc, char *argv[]) {
                 }
                 break;
             case LEADER:
+                if (bytes_received != 2) {
+                    printf("Message too long\n");
+                    break;
+                }
+
                 uint8_t sync = (uint8_t) message[bytes_red++]; 
 
                 if (sync == 0) {
@@ -400,6 +450,11 @@ int main(int argc, char *argv[]) {
 
                 break;
             case SYNC_START:
+                if (bytes_received != 10) {
+                    printf("Message too long\n");
+                    break;
+                }
+
                 if (during_sync) {
                     printf("SYNC_START while already in sync\n");
                     break;
@@ -471,6 +526,11 @@ int main(int argc, char *argv[]) {
                 }
                 break;
             case DELAY_REQUEST:
+                if (bytes_received != 1) {
+                    printf("Message too long\n");
+                    break;
+                }
+
                 peer = known_peer_list_find(peer_list,
                         sender_address.sin_addr.s_addr, sender_address.sin_port);
                 
@@ -498,6 +558,11 @@ int main(int argc, char *argv[]) {
 
                 break;
             case DELAY_RESPONSE:
+                if (bytes_received != 10) {
+                    printf("Message too long\n");
+                    break;
+                }
+
                 if (during_sync && sender_address.sin_addr.s_addr == sync_peer_candidate.sin_addr.s_addr && 
                     sender_address.sin_port == sync_peer_candidate.sin_port) {
 
