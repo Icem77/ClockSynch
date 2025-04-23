@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "err.h"
 
@@ -33,15 +34,13 @@ noreturn void fatal(const char* fmt, ...) {
     exit(1);
 }
 
-noreturn void msg_error(const char* fmt, ...) {
-    va_list fmt_args;
-
-    fprintf(stderr, "\tERROR MSG: ");
-
-    va_start(fmt_args, fmt);
-    vfprintf(stderr, fmt, fmt_args);
-    va_end(fmt_args);
-
-    fprintf(stderr, "\n");
-
+void error_msg(const unsigned char *buf, ssize_t len) {
+    ssize_t count = len < 10 ? len : 10;
+    // TODO: wypisywanie na standardowe wyjscie diagnostyczne
+    printf("ERROR MSG: ");
+    for (ssize_t i = 0; i < count; i++) {
+        // print each byte as exactly two hex digits
+        printf("%02x", buf[i]);
+    }
+    printf("\n");
 }

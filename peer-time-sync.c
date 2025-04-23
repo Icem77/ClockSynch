@@ -201,11 +201,7 @@ int main(int argc, char *argv[]) {
         ssize_t bytes_sent = sendto(socket_fd, message, message_size,
                 0, (struct sockaddr *) &peer_address, sizeof(peer_address));
 
-        if (bytes_sent < 0) {
-            syserr("sendto");
-        } else if (bytes_sent != message_size) {
-            fatal("incomplete sending");
-        }
+        send_check(bytes_sent, message_size);
 
         known_peer_list_add(&peer_list, peer_address.sin_addr.s_addr,
                 peer_address.sin_port); // add peer to list (do not confirm connection yet)
@@ -217,7 +213,7 @@ int main(int argc, char *argv[]) {
     memset(&sync_peer, 0, sizeof(sync_peer));
     sync_peer.sin_family = AF_INET; // IPv4
 
-    uint64_t last_sync_with_sync_peer = 0;
+    uint64_t last_sync_timestamp_ms = 0;
 
     struct sockaddr_in sync_peer_candidate;
     memset(&sync_peer_candidate, 0, sizeof(sync_peer_candidate));
@@ -225,12 +221,13 @@ int main(int argc, char *argv[]) {
 
     struct known_peer *peer;
     ssize_t sent;
-    uint64_t leader_start_timestamp = 0;
-    uint64_t sync_start_loop_timestamp = 0;
+    uint64_t leader_start_timestamp_ms = 0;
+    uint64_t sync_start_loop_timestamp_ms = 0;
     uint64_t offset = 0;
     uint64_t T1, T2, T3, T4;
     bool sync_peer_found = false;
     bool during_sync = false;
+    bool leader_start_privilege = false;
     uint8_t peer_sync;
     // Start receiving messages
     while (keepRunning) {
@@ -251,12 +248,13 @@ int main(int argc, char *argv[]) {
 
         switch (message_type) {
             case GET_TIME:
+                // check length
                 if (bytes_received != 1) {
                     printf("Message too long\n");
                     break;
                 }
 
-                // prepare message
+                // prepare TIME message
                 message[message_size++] = TIME;
                 message[message_size++] = synchronized;
                 uint64_t net_time = htobe64(time_since_ms(start_time_ms) - offset);
@@ -271,6 +269,7 @@ int main(int argc, char *argv[]) {
                 control_message(TIME, &bind_address, &sender_address);
                 break;
             case HELLO:
+                // check length
                 if (bytes_received != 1) {
                     printf("Message too long\n");
                     break;
@@ -315,13 +314,13 @@ int main(int argc, char *argv[]) {
                     break;
                 }
 
-                // 1. read peers count
+                // read peers count
                 uint16_t peers_count;
                 memcpy(&peers_count, message + bytes_red, PEER_COUNT_BYTE_SIZE);
                 bytes_red += PEER_COUNT_BYTE_SIZE;
                 peers_count = ntohs(peers_count);
 
-                // TODO: check if message has expected length
+                // check if message has expected length (assuming all peers have 4 byte address)
                 if (bytes_received - 3 != peers_count * 7) {
                     printf("HELLO_REPLY message length is not correct\n");
                     break;
@@ -335,9 +334,10 @@ int main(int argc, char *argv[]) {
                     bytes_red += PEER_ADDRESS_LENGTH_SIZE;
 
                     if (peer_address_length == 4) {
-                        bytes_red += 6;
+                        bytes_red += 6; // skip addres and port
                     } else {
                         peer_address_length_ok = false;
+                        break;
                     }
                 }
 
@@ -346,7 +346,7 @@ int main(int argc, char *argv[]) {
                     break;
                 }
 
-                // 2. read peers (data is correct)
+                // read peers (data is correct)
                 for (int i = 0; i < peers_count; ++i) {
                     uint8_t new_peer_address_length;
                     memcpy(&new_peer_address_length, message + bytes_red, PEER_ADDRESS_LENGTH_SIZE);
@@ -386,10 +386,13 @@ int main(int argc, char *argv[]) {
                 peer = known_peer_list_find(peer_list,
                         sender_address.sin_addr.s_addr, sender_address.sin_port);
                 
-                // TODO: co jesli dostaniemy CONNECT od osoby do ktorej wyslalismy CONNECT
                 if (peer == NULL || !peer->connection_confirmed) {
-                    known_peer_mark_conn_ack(known_peer_list_add(&peer_list, sender_address.sin_addr.s_addr,
-                        sender_address.sin_port), hello_reply_msg, &hello_reply_size, &count); // confirm connection
+                    if (peer == NULL) {
+                        known_peer_mark_conn_ack(known_peer_list_add(&peer_list, sender_address.sin_addr.s_addr,
+                            sender_address.sin_port), hello_reply_msg, &hello_reply_size, &count); // add & confirm connection    
+                    } else {
+                        known_peer_mark_conn_ack(peer, hello_reply_msg, &hello_reply_size, &count); // confirm connection
+                    }
 
                     // prepare ACK_CONNECT message
                     message[message_size++] = ACK_CONNECT;
@@ -422,7 +425,7 @@ int main(int argc, char *argv[]) {
                         known_peer_mark_conn_ack(peer, hello_reply_msg, &hello_reply_size, &count);
                     }
                 } else {
-                    msg_error("ACK_CONNECT from unexpected peer");
+                    printf("ACK_CONNECT from unexpected peer\n");
                 }
                 break;
             case LEADER:
@@ -435,11 +438,13 @@ int main(int argc, char *argv[]) {
 
                 if (sync == 0) {
                     synchronized = 0;
-                    leader_start_timestamp = current_time_ms();
+                    leader_start_privilege = true; // permission to start sync after 2s
+                    leader_start_timestamp_ms = current_time_ms();
                     printf("BECOMING LEADER\n");
                 } else if (sync == 255) {
                     if (synchronized == 0) {
                         synchronized = 255;
+                        leader_start_privilege = false;
                         sync_peer_found = false;
                     } else {
                         printf("already not a LEADER\n");
@@ -479,7 +484,7 @@ int main(int argc, char *argv[]) {
                             if (peer_sync < synchronized) {
                                 during_sync = true; // we are synchronizing
 
-                                last_sync_with_sync_peer = current_time_ms(); // update timestamp
+                                last_sync_timestamp_ms = current_time_ms(); // update timestamp
 
                                 // send DELAY_REQUEST
                                 message[message_size++] = DELAY_REQUEST;
@@ -496,7 +501,7 @@ int main(int argc, char *argv[]) {
                                 printf("insufficient synchronized in SYNC_START\n");
                             }
                         } else { // sender is not a sync_peer
-                            if (abs((int)synchronized - (int)peer_sync) >= 2) {
+                            if ((int)synchronized - (int)peer_sync >= 2) {
                                 during_sync = true; // we are synchronizing
 
                                 sync_peer_candidate.sin_addr.s_addr = sender_address.sin_addr.s_addr;
@@ -586,6 +591,8 @@ int main(int argc, char *argv[]) {
                     sync_peer_found = true; // we found sync peer
 
                     synchronized = peer_sync + 1; // set new synchronization level
+
+                    last_sync_timestamp_ms = current_time_ms(); // update timestamp
                 } else {
                     printf("DELAY_RESPONSE from unexpected peer or timed out\n");
                     break;
@@ -594,14 +601,17 @@ int main(int argc, char *argv[]) {
         }
 
         // start synchronization if our level is under 254
-        if ((synchronized == 0 && time_since_ms(leader_start_timestamp) >= 2000) || 
-            (synchronized != 0 && synchronized < 254 && time_since_ms(sync_start_loop_timestamp) >= 5000)) {
+        if ((leader_start_privilege && synchronized == 0 && time_since_ms(leader_start_timestamp_ms) >= 2000) || 
+            (synchronized < 254 && time_since_ms(sync_start_loop_timestamp_ms) >= 5000)) {
+
+            leader_start_privilege = false;
+            
             // prepare SYNC_START message
             message_size = 0;
             message[message_size++] = SYNC_START;
             message[message_size++] = synchronized;
             
-            sync_start_loop_timestamp = current_time_ms(); // update timestamp
+            sync_start_loop_timestamp_ms = current_time_ms(); // update timestamp
             peer = peer_list;
             while (peer != NULL) {
                 if (peer->connection_confirmed) {
@@ -626,13 +636,14 @@ int main(int argc, char *argv[]) {
         }
 
         // if we are during sync check how much time passed since SYNC_START message
-        if (during_sync && current_time_ms() - T2 >= 5000) {
+        if (during_sync && time_since_ms(start_time_ms) - T2 >= 5000) {
             during_sync = false; // stop synchronizing
             printf("DELAY_RESPONSE timeout\n");
         }
 
-        if (sync_peer_found && current_time_ms() - last_sync_with_sync_peer >= 20000) {
-            sync_peer_found = false; // stop synchronizing
+        if (sync_peer_found && time_since_ms(last_sync_timestamp_ms) >= 20000) {
+            sync_peer_found = false; // not in sync anymore
+            offset = 0; // reset offset
             synchronized = 255;
             printf("Lost connection with sync_peer\n");
         }
