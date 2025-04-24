@@ -19,26 +19,9 @@ bool known_peer_equals(struct known_peer *p, in_addr_t ip, uint16_t port) {
     return (p->address.sin_addr.s_addr == ip && p->address.sin_port == port);
 }
 
-void known_peer_mark_conn_ack(struct known_peer *peer, char *hello_reply_msg, 
-    ssize_t *hello_reply_size, uint16_t *count) {
-
+void known_peer_mark_conn_ack(struct known_peer *peer, uint16_t *count) {
     peer->connection_confirmed = true;
-
-    // Add peer to the HELLO_REPLY message
-    *count = ntohs(*count);
     (*count)++;
-    *count = htons(*count);
-    memcpy(hello_reply_msg + 1, count, sizeof(*count)); // Update number of known peers
-
-    uint8_t peer_address_length = PEER_ADDRESS_LENGTH;
-    memcpy(hello_reply_msg + *hello_reply_size, &peer_address_length, PEER_ADDRESS_LENGTH_SIZE); // Add new address length
-    (*hello_reply_size) += PEER_ADDRESS_LENGTH_SIZE;
-
-    memcpy(hello_reply_msg + *hello_reply_size, &peer->address.sin_addr.s_addr, sizeof(peer->address.sin_addr.s_addr)); // Add new address
-    (*hello_reply_size) += sizeof(peer->address.sin_addr.s_addr);
-
-    memcpy(hello_reply_msg + *hello_reply_size, &peer->address.sin_port, sizeof(peer->address.sin_port)); // Add new port
-    (*hello_reply_size) += sizeof(peer->address.sin_port);
 }
 
 struct known_peer* known_peer_list_add(struct known_peer **head, in_addr_t ip, uint16_t port) {

@@ -22,8 +22,7 @@ struct known_peer* known_peer_list_init();
 
 bool known_peer_equals(struct known_peer *p, in_addr_t ip, uint16_t port);
 
-void known_peer_mark_conn_ack(struct known_peer *peer, char *hello_reply_msg, 
-    ssize_t *hello_reply_size, uint16_t *count);
+void known_peer_mark_conn_ack(struct known_peer *peer, uint16_t *count);
 
 struct known_peer* known_peer_list_add(struct known_peer **head, in_addr_t ip, uint16_t port);
 
