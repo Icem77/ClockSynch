@@ -34,7 +34,7 @@ noreturn void fatal(const char* fmt, ...) {
     exit(1);
 }
 
-void error_msg(const unsigned char *buf, ssize_t len) {
+void error_msg(char *buf, ssize_t len) {
     ssize_t count = len < 10 ? len : 10;
     // TODO: wypisywanie na standardowe wyjscie diagnostyczne
     printf("ERROR MSG: ");

@@ -9,6 +9,6 @@ noreturn void syserr(const char* fmt, ...);
 // Print information about an error and quits.
 noreturn void fatal(const char* fmt, ...);
 
-void error_msg(const unsigned char *buf, ssize_t len);
+void error_msg(char *buf, ssize_t len);
 
 #endif

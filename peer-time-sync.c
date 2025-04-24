@@ -212,7 +212,7 @@ int main(int argc, char *argv[]) {
     memset(&sync_peer_candidate, 0, sizeof(sync_peer_candidate));
     sync_peer_candidate.sin_family = AF_INET; // IPv4
 
-    struct known_peer *peer;
+    struct known_peer *peer = NULL;
     ssize_t sent;
     uint64_t leader_start_timestamp = 0;
     uint64_t sync_start_loop_timestamp = 0;
@@ -346,7 +346,7 @@ int main(int argc, char *argv[]) {
 
                     hello_reply_msg_size += PEER_COUNT_BYTE_SIZE;
 
-                    for (peer == peer_list; peer != NULL; peer = peer->next) {
+                    for (peer = peer_list; peer != NULL; peer = peer->next) {
                         if (peer->connection_confirmed && peer->address.sin_addr.s_addr != sender_address.sin_addr.s_addr &&
                             peer->address.sin_port != sender_address.sin_port) {
 
@@ -397,7 +397,7 @@ int main(int argc, char *argv[]) {
 
                 // read peers count
                 uint16_t peers_count;
-                memcpy(&peers_count, message + bytes_red, PEER_COUNT_BYTE_SIZE);
+                memcpy(&peers_count, incoming_message + bytes_red, PEER_COUNT_BYTE_SIZE);
                 bytes_red += PEER_COUNT_BYTE_SIZE;
                 peers_count = ntohs(peers_count);
 
@@ -411,7 +411,7 @@ int main(int argc, char *argv[]) {
                 bool peer_address_length_ok = true;
                 for (int i = 0; i < peers_count; ++i) {
                     uint8_t peer_address_length;
-                    memcpy(&peer_address_length, message + bytes_red, PEER_ADDRESS_LENGTH_SIZE);
+                    memcpy(&peer_address_length, incoming_message + bytes_red, PEER_ADDRESS_LENGTH_SIZE);
                     bytes_red += PEER_ADDRESS_LENGTH_SIZE;
 
                     if (peer_address_length == 4) {
@@ -430,15 +430,15 @@ int main(int argc, char *argv[]) {
                 // read peers (data is correct)
                 for (int i = 0; i < peers_count; ++i) {
                     uint8_t new_peer_address_length;
-                    memcpy(&new_peer_address_length, message + bytes_red, PEER_ADDRESS_LENGTH_SIZE);
+                    memcpy(&new_peer_address_length, incoming_message + bytes_red, PEER_ADDRESS_LENGTH_SIZE);
                     bytes_red += PEER_ADDRESS_LENGTH_SIZE;
 
                     in_addr_t new_peer_ip;
-                    memcpy(&new_peer_ip, message + bytes_red, new_peer_address_length);
+                    memcpy(&new_peer_ip, incoming_message + bytes_red, new_peer_address_length);
                     bytes_red += new_peer_address_length;
 
                     uint16_t new_peer_port;
-                    memcpy(&new_peer_port, message + bytes_red, PORT_BYTE_SIZE);
+                    memcpy(&new_peer_port, incoming_message + bytes_red, PORT_BYTE_SIZE);
                     bytes_red += PORT_BYTE_SIZE;
 
                     // add peer to the list (do not confirm connection yet)
@@ -648,7 +648,7 @@ int main(int argc, char *argv[]) {
 
                     during_sync = false; // finish synchronizing
 
-                    uint8_t peer_sync_again = (uint8_t) message[bytes_red++]; // read synch of peer
+                    uint8_t peer_sync_again = (uint8_t) incoming_message[bytes_red++]; // read synch of peer
                     if (peer_sync_again != peer_sync) {
                         error_msg(incoming_message, bytes_received);
                         printf("peer_sync in DELAY_RESPONSE is different than in SYNC_START (START: %d, NOW: %d)\n", peer_sync, peer_sync_again);
@@ -656,7 +656,7 @@ int main(int argc, char *argv[]) {
                         break;
                     }
 
-                    memcpy(&T4, message + bytes_red, sizeof(T4)); // get T4 timestamp (time of sending DELAY_RESPONSE)
+                    memcpy(&T4, incoming_message + bytes_red, sizeof(T4)); // get T4 timestamp (time of sending DELAY_RESPONSE)
                     bytes_red += sizeof(T4);
                     T4 = be64toh(T4); // convert to host byte order
 
