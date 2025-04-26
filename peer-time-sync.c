@@ -274,7 +274,7 @@ int main(int argc, char *argv[]) {
 
         struct sockaddr_in sender_address;
         socklen_t sender_address_len = (socklen_t) sizeof(sender_address);
-        ssize_t bytes_received = recvfrom(socket_fd, incoming_message, sizeof(incoming_message),
+        ssize_t bytes_received = recvfrom(socket_fd, incoming_message, MAX_MSG_SIZE,
                 0, (struct sockaddr *) &sender_address, &sender_address_len);
 
         if (bytes_received == -1) {
@@ -332,7 +332,7 @@ int main(int argc, char *argv[]) {
 
                 if (peer != NULL && peer->connection_confirmed) {
                     // prepare HELLO_REPLY message
-                    char *hello_reply_msg = (char *) malloc(3 + count * 7);
+                    char *hello_reply_msg = (char *) malloc(3 + (count - 1) * 7);
                     if (hello_reply_msg == NULL) {
                         syserr("malloc");
                     }
@@ -341,24 +341,25 @@ int main(int argc, char *argv[]) {
 
                     hello_reply_msg[hello_reply_msg_size++] = HELLO_REPLY;
 
-                    uint16_t net_count = htons(count);
-                    memcpy(hello_reply_msg, &net_count, PEER_COUNT_BYTE_SIZE);
-
+                    uint16_t net_count = htons(count - 1); // exclude peer we send to
+                    memcpy(hello_reply_msg + hello_reply_msg_size, &net_count, PEER_COUNT_BYTE_SIZE);
                     hello_reply_msg_size += PEER_COUNT_BYTE_SIZE;
 
-                    for (peer = peer_list; peer != NULL; peer = peer->next) {
-                        if (peer->connection_confirmed && peer->address.sin_addr.s_addr != sender_address.sin_addr.s_addr &&
-                            peer->address.sin_port != sender_address.sin_port) {
-
+                    peer = peer_list;
+                    while(peer != NULL) {
+                        if (peer->connection_confirmed && (peer->address.sin_addr.s_addr != sender_address.sin_addr.s_addr ||
+                            peer->address.sin_port != sender_address.sin_port)) {
+                            
                             hello_reply_msg[hello_reply_msg_size++] = PEER_ADDRESS_LENGTH;
 
                             memcpy(hello_reply_msg + hello_reply_msg_size, &peer->address.sin_addr.s_addr,
                                 PEER_ADDRESS_LENGTH);
-                            short_out_message_size += PEER_ADDRESS_LENGTH;
+                            hello_reply_msg_size += PEER_ADDRESS_LENGTH;
 
-                            memcpy(hello_reply_msg + short_out_message_size, &peer->address.sin_port, PORT_BYTE_SIZE);
-                            short_out_message_size += PORT_BYTE_SIZE;
+                            memcpy(hello_reply_msg + hello_reply_msg_size, &peer->address.sin_port, PORT_BYTE_SIZE);
+                            hello_reply_msg_size += PORT_BYTE_SIZE;
                         }
+                        peer = peer->next;
                     }
 
                     sent = sendto(socket_fd, hello_reply_msg, hello_reply_msg_size, 0, 
@@ -403,29 +404,33 @@ int main(int argc, char *argv[]) {
 
                 // check if message has expected length (assuming all peers have 4 byte address)
                 if (bytes_received - 3 != peers_count * 7) {
+                    printf("BYTES RECEIVED: %ld expected: , %d", bytes_received, 3 + peers_count * 7);
                     printf("HELLO_REPLY message length is not correct\n");
                     break;
                 }
 
-                // check if each peer_address_length is equal to 4
-                bool peer_address_length_ok = true;
+                // check if each peer_address_length is equal to 4 and port is not 0
+                bool data_correct = true;
                 for (int i = 0; i < peers_count; ++i) {
                     uint8_t peer_address_length;
                     memcpy(&peer_address_length, incoming_message + bytes_red, PEER_ADDRESS_LENGTH_SIZE);
-                    bytes_red += PEER_ADDRESS_LENGTH_SIZE;
+                    bytes_red += PEER_ADDRESS_LENGTH_SIZE + 4; // skip address length and address
+                    uint16_t peer_port;
+                    memcpy(&peer_port, incoming_message + bytes_red, PORT_BYTE_SIZE);
+                    bytes_red += PORT_BYTE_SIZE;
 
-                    if (peer_address_length == 4) {
-                        bytes_red += 6; // skip addres and port
-                    } else {
-                        peer_address_length_ok = false;
+                    if (peer_address_length != 4 || peer_port == 0) {
+                        data_correct = false;
                         break;
                     }
                 }
 
-                if (!peer_address_length_ok) {
+                if (!data_correct) {
                     printf("HELLO_REPLY message not correct\n");
                     break;
                 }
+
+                bytes_red = 3; // reset bytes_red to read peers
 
                 // read peers (data is correct)
                 for (int i = 0; i < peers_count; ++i) {
@@ -506,7 +511,7 @@ int main(int argc, char *argv[]) {
                 peer = known_peer_list_find(peer_list,
                         sender_address.sin_addr.s_addr, sender_address.sin_port);
 
-                if (peer == NULL) {
+                if (peer == NULL || peer->connection_confirmed) {
                     error_msg(incoming_message, bytes_received);
                     printf("ACK_CONNECT from unknown peer\n");
                     break;
@@ -550,7 +555,7 @@ int main(int argc, char *argv[]) {
             case SYNC_START:
                 if (bytes_received != 10) {
                     error_msg(incoming_message, bytes_received);
-                    printf("Message too long\n");
+                    printf("Received: %ld\n", bytes_received);
                     break;
                 }
 
@@ -571,7 +576,7 @@ int main(int argc, char *argv[]) {
 
                 // check if we know this peer
                 if (peer != NULL && peer->connection_confirmed && peer_sync < 254 && 
-                    (((int)synchronized - (int)peer_sync >= 2) || 
+                    ((int)synchronized - (int)peer_sync >= 2 || 
                         (sync_peer_found && sync_peer.sin_addr.s_addr == sender_address.sin_addr.s_addr &&
                         sync_peer.sin_port == sender_address.sin_port && peer_sync < synchronized)))
                     {
@@ -594,7 +599,7 @@ int main(int argc, char *argv[]) {
                         control_message(DELAY_REQUEST, &bind_address, &sender_address);
                 } else {
                     error_msg(incoming_message, bytes_received);
-                    printf("SYNC_START from unknown peer\n");
+                    printf("SYNC_START from unknown peer OR not enough synchronized\n");
                     break;
                 }
                 break;
@@ -610,7 +615,7 @@ int main(int argc, char *argv[]) {
                 
                 // if we do not know this peer or response is not allowed we ignore the message
                 if (peer == NULL || !peer->connection_confirmed || !peer->delay_response_token || 
-                    current_time_ms() - peer->last_message_timestamp_ms >= 5000)
+                    time_since_ms(peer->last_message_timestamp_ms) >= 5000)
                 {
 
                     error_msg(incoming_message, bytes_received);
@@ -676,10 +681,6 @@ int main(int argc, char *argv[]) {
                     break;
                 }
 
-                break;
-            default:
-                error_msg(incoming_message, bytes_received);
-                printf("unknown message type: %" PRIu8 "\n", message_type);
                 break;
         }
     }
