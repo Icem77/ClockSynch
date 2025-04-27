@@ -99,7 +99,7 @@ int main(int argc, char *argv[]) {
     struct known_peer *peer_list = known_peer_list_init(); // Initialize peer list
 
     uint8_t synchronized = 255; // Set default synchronization level
-    uint16_t count = 0; // Number of known peers (in HOST byte order)
+    uint16_t count = 0; // Number of known peers (stored in HOST byte order)
 
     char *incoming_message = (char *) malloc(MAX_MSG_SIZE); // Create buffer for incoming messages
     if (incoming_message == NULL) {
@@ -220,14 +220,14 @@ int main(int argc, char *argv[]) {
 
     struct known_peer *peer = NULL;
     ssize_t sent;
-    uint64_t leader_start_timestamp = 0;
-    uint64_t sync_start_loop_timestamp = 0;
+    uint64_t leader_start_timestamp = 0; // moment of becoming a leader
+    uint64_t sync_start_loop_timestamp = 0; // moment of starting SYNC_START loop
     uint64_t offset = 0;
     uint64_t T1 = 0, T2 = 0, T3 = 0, T4 = 0;
     bool sync_peer_found = false;
     bool during_sync = false;
     bool leader_start_privilege = false;
-    uint8_t peer_sync = 254;
+    uint8_t sync_peer_synchronized = 254;
     // Start receiving messages
     while (keepRunning) {
         // start synchronization if our level is under 254
@@ -283,7 +283,9 @@ int main(int argc, char *argv[]) {
         if (bytes_received == -1) {
             continue;
         } else if (bytes_received == 0) {
-            printf("recieved empty message\n");        
+            error_msg(incoming_message, bytes_received);
+            printf("Received 0 bytes\n");
+            continue;  
         }
 
         ssize_t bytes_red = 0;
@@ -292,7 +294,6 @@ int main(int argc, char *argv[]) {
 
         switch (message_type) {
             case GET_TIME:
-                // check length
                 if (bytes_received != 1) {
                     error_msg(incoming_message, bytes_received);
                     printf("Message too long\n");
@@ -314,7 +315,6 @@ int main(int argc, char *argv[]) {
                 control_message(TIME, &bind_address, &sender_address);
                 break;
             case HELLO:
-                // check length
                 if (bytes_received != 1) {
                     error_msg(incoming_message, bytes_received);
                     printf("Message too long\n");
@@ -541,9 +541,9 @@ int main(int argc, char *argv[]) {
                     break;
                 }
 
-                uint8_t sync = (uint8_t) incoming_message[bytes_red++]; 
+                uint8_t sync_in_leader = (uint8_t) incoming_message[bytes_red++]; 
 
-                if (sync == 0) {
+                if (sync_in_leader == 0) {
                     synchronized = 0;
                     leader_start_privilege = true; // permission to start sync after 2s
                     leader_start_timestamp = current_time_ms(); // set timestamps to start sending SYNC_START after 2s
@@ -551,7 +551,7 @@ int main(int argc, char *argv[]) {
                     sync_peer_found = false;
                     during_sync = false; // stop synchronizing to avoid decrease of sync level
                     printf("BECOMING LEADER\n");
-                } else if (sync == 255) {
+                } else if (sync_in_leader == 255) {
                     if (synchronized == 0) {
                         synchronized = 255;
                         leader_start_privilege = false;
@@ -584,18 +584,18 @@ int main(int argc, char *argv[]) {
 
                 peer = known_peer_list_find(peer_list, sender_address.sin_addr.s_addr, sender_address.sin_port);
 
-                peer_sync = (uint8_t) incoming_message[bytes_red++]; // read synch of peer
+                sync_peer_synchronized = (uint8_t) incoming_message[bytes_red++]; // read synch of peer
                 memcpy(&T1, incoming_message + bytes_red, sizeof(T1)); // get T1 timestamp (time of sending SYNC_START)
                 T1 = be64toh(T1); // convert to host byte order
                 bytes_red += sizeof(T1);
 
                 // check if we know this peer
-                if (peer != NULL && peer->connection_confirmed && peer_sync < 254 && 
-                    ((int)synchronized - (int)peer_sync >= 2 || 
+                if (peer != NULL && peer->connection_confirmed && sync_peer_synchronized < 254 && 
+                    ((int)synchronized - (int)sync_peer_synchronized >= 2 || 
                         (sync_peer_found && sync_peer.sin_addr.s_addr == sender_address.sin_addr.s_addr &&
-                        sync_peer.sin_port == sender_address.sin_port && peer_sync < synchronized)))
+                        sync_peer.sin_port == sender_address.sin_port && sync_peer_synchronized < synchronized)))
                     {
-                        printf("SYNCING (mine: %d, incoming: %d)\n", synchronized, peer_sync);
+                        printf("SYNCING (mine: %d, incoming: %d)\n", synchronized, sync_peer_synchronized);
 
                         during_sync = true; // we are synchronizing
 
@@ -628,7 +628,7 @@ int main(int argc, char *argv[]) {
                 peer = known_peer_list_find(peer_list,
                         sender_address.sin_addr.s_addr, sender_address.sin_port);
                 
-                // if we do not know this peer or response is not allowed we ignore the message
+                // if we do not know this peer or response was already sent we ignore the message
                 if (peer == NULL || !peer->connection_confirmed || !peer->delay_response_token || 
                     time_since_ms(peer->last_message_timestamp_ms) >= 5000)
                 {
@@ -655,7 +655,7 @@ int main(int argc, char *argv[]) {
                 control_message(DELAY_RESPONSE, &bind_address, &sender_address);
 
                 break;
-            case DELAY_RESPONSE: // TODO: zwinac w jednego if'a (narazie do debugowania zostawiam)
+            case DELAY_RESPONSE:
                 // check length
                 if (bytes_received != 10) {
                     error_msg(incoming_message, bytes_received);
@@ -669,9 +669,9 @@ int main(int argc, char *argv[]) {
                     during_sync = false; // finish synchronizing
 
                     uint8_t peer_sync_again = (uint8_t) incoming_message[bytes_red++]; // read synch of peer
-                    if (peer_sync_again != peer_sync) {
+                    if (peer_sync_again != sync_peer_synchronized) {
                         error_msg(incoming_message, bytes_received);
-                        printf("peer_sync in DELAY_RESPONSE is different than in SYNC_START (START: %d, NOW: %d)\n", peer_sync, peer_sync_again);
+                        printf("sync_peer_synchronized in DELAY_RESPONSE is different than in SYNC_START (START: %d, NOW: %d)\n", sync_peer_synchronized, peer_sync_again);
                         during_sync = false;
                         break;
                     }
@@ -693,7 +693,7 @@ int main(int argc, char *argv[]) {
                     sync_peer.sin_port = sync_peer_candidate.sin_port;
                     sync_peer_found = true; // we found sync peer
 
-                    synchronized = peer_sync + 1; // set new synchronization level
+                    synchronized = sync_peer_synchronized + 1; // set new synchronization level
 
                     last_sync_timestamp = current_time_ms(); // update timestamp
                 } else {
