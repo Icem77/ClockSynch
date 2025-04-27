@@ -378,7 +378,7 @@ int main(int argc, char *argv[]) {
                 }
 
                 break;
-            case HELLO_REPLY: // TODO: o co tu chodzi? nie wiem!
+            case HELLO_REPLY:
                 // check if we sent HELLO to this peer
                 if (a_appeared && r_appeared && hello_peer_address.sin_addr.s_addr == sender_address.sin_addr.s_addr &&
                     hello_peer_address.sin_port == sender_address.sin_port) {
@@ -464,6 +464,8 @@ int main(int argc, char *argv[]) {
 
                         control_message(CONNECT, &bind_address, &sender_address);
                     }
+
+                    a_appeared = false; // accept only one correct HELLO_REPLY 
                 } else {
                     error_msg(incoming_message, bytes_received);
                     printf("HELLO_REPLY from unexpected peer\n");
