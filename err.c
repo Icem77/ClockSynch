@@ -40,7 +40,7 @@ void error_msg(char *buf, ssize_t len) {
     printf("ERROR MSG: ");
     for (ssize_t i = 0; i < count; i++) {
         // print each byte as exactly two hex digits
-        printf("%02x", buf[i]);
+        printf("%02x", (unsigned char) buf[i]);
     }
     printf("\n");
 }

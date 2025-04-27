@@ -12,6 +12,7 @@
 struct known_peer {
     struct sockaddr_in address;
     uint64_t last_message_timestamp_ms;
+    bool ack_connect_token;
     bool connection_confirmed;
     bool delay_response_token;
 
