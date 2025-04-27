@@ -544,9 +544,10 @@ int main(int argc, char *argv[]) {
                 if (sync == 0) {
                     synchronized = 0;
                     leader_start_privilege = true; // permission to start sync after 2s
-                    leader_start_timestamp = current_time_ms();
+                    leader_start_timestamp = current_time_ms(); // set timestamps to start sending SYNC_START after 2s
                     sync_start_loop_timestamp = current_time_ms(); 
                     sync_peer_found = false;
+                    during_sync = false; // stop synchronizing to avoid decrease of sync level
                     printf("BECOMING LEADER\n");
                 } else if (sync == 255) {
                     if (synchronized == 0) {
@@ -677,6 +678,12 @@ int main(int argc, char *argv[]) {
                     bytes_red += sizeof(T4);
                     T4 = be64toh(T4); // convert to host byte order
 
+                    if (T4 < T1) {
+                        error_msg(incoming_message, bytes_received);
+                        printf("T4 < T1\n");
+                        break;
+                    }
+
                     offset = (T2 - T1 + T3 - T4) / 2; // update offset
                     printf("new offset: %" PRIu64 "\n", offset);
 
@@ -710,8 +717,17 @@ int main(int argc, char *argv[]) {
     }
 
     free(incoming_message);
+    if (incoming_message == NULL) {
+        printf("Incoming message freed.\n");
+    } else {
+        printf("cannot free incoming message\n");
+    }
     free(short_out_message);
-    // TODO: check if free was successful
+    if (short_out_message == NULL) {
+        printf("Short outgoing message freed.\n");
+    } else {
+        printf("cannot free short outgoing message\n");
+    }
 
     return 0;
 }
