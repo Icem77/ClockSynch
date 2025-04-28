@@ -7,7 +7,6 @@
 #include <limits.h> // limits macros
 #include <string.h> // memset
 #include <fcntl.h> // non-blocking socket
-#include <time.h> // clock_gettime, struct timespec
 #include <signal.h> // signal handling for CTRL+C
 
 #include <sys/types.h> // skopiowane straigh z labow (moze cos stad warto usunac?)
@@ -18,6 +17,7 @@
 
 #include "err.h" // error handling
 #include "known-peer.h" // peer list handling
+#include "time.h"
 
 #define HELLO 1 // define message types
 #define HELLO_REPLY 2
@@ -37,24 +37,12 @@
 #define PORT_BYTE_SIZE 2
 
 static volatile sig_atomic_t keepRunning = 1;
+char incoming_message[MAX_MSG_SIZE];
+char out_message[MAX_MSG_SIZE];
 
 void handle_sigint(int signo) {
     (void) signo; // Avoid unused parameter warning
     keepRunning = 0;  // Set flag to stop the loop
-}
-
-static uint64_t current_time_ms(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-
-    // Konwersja seconds -> ms & nanoseconds -> ms
-    uint64_t ms = (uint64_t)ts.tv_sec * 1000
-                + (uint64_t)(ts.tv_nsec / 1000000);
-    return ms;
-}
-
-static uint64_t time_since_ms(uint64_t start_time_ms) {
-    return current_time_ms() - start_time_ms;
 }
 
 static uint16_t read_port(char const *string) {
@@ -62,17 +50,22 @@ static uint16_t read_port(char const *string) {
     errno = 0;
     unsigned long port = strtoul(string, &endptr, 10);
     if (errno != 0 || *endptr != 0 || port == 0 || port > UINT16_MAX) {
-        fatal("%s is not a valid port number", string);
+        fprintf(stderr, "ERROR: %s is not a valid port number", string);
+        exit(1);
     }
     return (uint16_t) port;
 }
 
-void send_check(ssize_t bytes_sent, ssize_t message_size) {
+bool send_check(ssize_t bytes_sent, ssize_t message_size) {
     if (bytes_sent < 0) {
         syserr("sendto");
+        return false;
     } else if (bytes_sent != message_size) {
-        fatal("incomplete sending");
+        syserr("incomplete sending");
+        return false;
     }
+
+    return true;
 }
 
 void control_message(uint8_t message_type, struct sockaddr_in *sender_address, struct sockaddr_in *reciever_address) {
@@ -91,25 +84,17 @@ void control_message(uint8_t message_type, struct sockaddr_in *sender_address, s
 int main(int argc, char *argv[]) {
     // Add SIGINT handler
     if (signal(SIGINT, handle_sigint) == SIG_ERR) {
-        fprintf(stderr, "ERROR: cannot set signal handler\n");
+        syserr("could not set signal handler");
     }
 
     uint64_t start_time_ms = current_time_ms(); // Start measuring time
 
-    struct known_peer *peer_list = known_peer_list_init(); // Initialize peer list
+    struct known_peer *peer_list = NULL; // Initialize peer list
 
     uint8_t synchronized = 255; // Set default synchronization level
     uint16_t count = 0; // Number of known peers (stored in HOST byte order)
 
-    char *incoming_message = (char *) malloc(MAX_MSG_SIZE); // Create buffer for incoming messages
-    if (incoming_message == NULL) {
-        syserr("malloc");
-    }
-    char *short_out_message = (char *) malloc(MAX_SHORT_MSG_SIZE); // Create buffer for outgoing messages other than HELLO_REPLY
-    if (short_out_message == NULL) {
-        syserr("malloc");
-    }
-    ssize_t short_out_message_size = 0; 
+    ssize_t out_message_size = 0; 
 
     // Set bind address
     struct sockaddr_in bind_address;
@@ -143,10 +128,10 @@ int main(int argc, char *argv[]) {
                 printf("Option p with argument: %s\n", optarg);
                 bind_address.sin_port = htons(read_port(optarg));
                 break;
-            case 'a': // Peer address
+            case 'a': // Hello Peer address
                 printf("Option a with argument: %s\n", optarg);
                 
-                // Load IP / hostname of a peer
+                // Load IP / hostname of a hello peer
                 struct addrinfo hints;
                 memset(&hints, 0, sizeof(struct addrinfo));
                 hints.ai_family = AF_INET; // IPv4
@@ -156,7 +141,8 @@ int main(int argc, char *argv[]) {
                 struct addrinfo *address_result;
                 int errcode = getaddrinfo(optarg, NULL, &hints, &address_result);
                 if (errcode != 0) {
-                    fatal("getaddrinfo: %s", gai_strerror(errcode));
+                    syserr("getaddrinfo");
+                    exit(1);
                 }
             
                 hello_peer_address.sin_addr.s_addr =       // IP address
@@ -166,7 +152,7 @@ int main(int argc, char *argv[]) {
 
                 a_appeared = true;
                 break;
-            case 'r': // Peer port
+            case 'r': // Hello Peer port
                 printf("Option r with argument: %s\n", optarg);
                 hello_peer_address.sin_port = htons(read_port(optarg));
                 r_appeared = true;
@@ -176,36 +162,40 @@ int main(int argc, char *argv[]) {
 
     // Check if -a and -r come in pair
     if (a_appeared && !r_appeared) {
-        fatal("-a option requires -r option");
+        syserr("-a option requires -r option");
+        exit(1);
     } else if (!a_appeared && r_appeared) {
-        fatal("-r option requires -a option\n");
+        syserr("-r option requires -a option\n");
+        exit(1);
     } 
 
     // Create a socket
     int socket_fd = socket(AF_INET, SOCK_DGRAM, 0);
     if (socket_fd < 0) {
-        syserr("cannot create a socket");
+        syserr("could not create a socket");
+        exit(1);
     }
 
     fcntl(socket_fd, F_SETFL, O_NONBLOCK); // Set non-blocking mode
 
-    // Bind socket to concrete address
+    // Bind socket to address
     if (bind(socket_fd, (struct sockaddr *) &bind_address, (socklen_t) sizeof(bind_address)) < 0) {
-        syserr("cannot bind socket");
+        syserr("could not bind socket");
+        exit(1);
     }
 
     if (a_appeared && r_appeared) { // Send HELLO to peer
-        short_out_message[short_out_message_size++] = HELLO;
+        out_message[out_message_size++] = HELLO;
 
-        ssize_t bytes_sent = sendto(socket_fd, short_out_message, short_out_message_size,
+        ssize_t bytes_sent = sendto(socket_fd, out_message, out_message_size,
                 0, (struct sockaddr *) &hello_peer_address, sizeof(hello_peer_address));
 
-        send_check(bytes_sent, short_out_message_size);
-
-        known_peer_list_add(&peer_list, hello_peer_address.sin_addr.s_addr,
-                hello_peer_address.sin_port); // add peer to list (do not confirm connection yet)
-
-        control_message(HELLO, &bind_address, &hello_peer_address);
+        if (send_check(bytes_sent, out_message_size)) {
+            known_peer_list_add(&peer_list, hello_peer_address.sin_addr.s_addr,
+                    hello_peer_address.sin_port); // add peer to list (do not confirm connection yet)
+                    
+            control_message(HELLO, &bind_address, &hello_peer_address);
+        }        
     }
 
     struct sockaddr_in sync_peer;
@@ -222,53 +212,55 @@ int main(int argc, char *argv[]) {
     ssize_t sent;
     uint64_t leader_start_timestamp = 0; // moment of becoming a leader
     uint64_t sync_start_loop_timestamp = 0; // moment of starting SYNC_START loop
-    uint64_t offset = 0;
+    int64_t offset = 0;
     uint64_t T1 = 0, T2 = 0, T3 = 0, T4 = 0;
     bool sync_peer_found = false;
     bool during_sync = false;
     bool leader_start_privilege = false;
-    uint8_t sync_peer_synchronized = 254;
-    // Start receiving messages
+    uint8_t sync_peer_synchronized = 255;
+
+    // Main loop
     while (keepRunning) {
-        // start synchronization if our level is under 254
-        if ((leader_start_privilege && time_since_ms(leader_start_timestamp) >= 2000) || 
-            (synchronized < 254 && time_since_ms(sync_start_loop_timestamp) >= 5000)) {
+        // start synchronization if level is under 254
+        if ((leader_start_privilege && time_since_ms(leader_start_timestamp) >= LEADER_PRIVILEGE_SYNC_START_MS) || 
+            (synchronized < 254 && time_since_ms(sync_start_loop_timestamp) >= SYNC_START_INTERVAL_MS)) {
 
             leader_start_privilege = false;
             
             // prepare SYNC_START message
-            short_out_message_size = 0;
-            short_out_message[short_out_message_size++] = SYNC_START;
-            short_out_message[short_out_message_size++] = synchronized;
+            out_message_size = 0;
+            out_message[out_message_size++] = SYNC_START;
+            out_message[out_message_size++] = synchronized;
             
             sync_start_loop_timestamp = current_time_ms(); // update timestamp
+
             for (peer = peer_list; peer != NULL; peer = peer->next) {
                 if (peer->connection_confirmed) {
                     uint64_t net_time = htobe64(time_since_ms(start_time_ms) - offset);
-                    memcpy(short_out_message + short_out_message_size, &net_time, sizeof(net_time));
-                    short_out_message_size += sizeof(net_time);
+                    memcpy(out_message + out_message_size, &net_time, sizeof(net_time));
+                    out_message_size += sizeof(net_time);
 
-                    sent = sendto(socket_fd, short_out_message, short_out_message_size, 0, 
+                    sent = sendto(socket_fd, out_message, out_message_size, 0, 
                         (struct sockaddr*) &peer->address, sizeof(peer->address));
                         
-                    send_check(sent, short_out_message_size);
+                    if (send_check(sent, out_message_size)) {
+                        peer->last_message_timestamp_ms = current_time_ms(); // update timestamp
+                        peer->delay_response_token = true; // give token for delay response
+                    }
                     
-                    peer->last_message_timestamp_ms = current_time_ms(); // update timestamp
-                    peer->delay_response_token = true; // give delay response token
-                    
-                    short_out_message_size -= sizeof(net_time); // remove timestamp from message
+                    out_message_size -= sizeof(net_time); // remove timestamp from message
                     control_message(SYNC_START, &bind_address, &peer->address);
                 }
             }
         }
 
         // if we are during sync check how much time passed since SYNC_START message
-        if (during_sync && time_since_ms(start_time_ms) - T2 >= 5000) {
+        if (during_sync && time_since_ms(start_time_ms) - T2 >= DELAY_RESPONSE_TIMEOUT_MS) {
             during_sync = false; // stop synchronizing
             printf("DELAY_RESPONSE timeout\n");
         }
 
-        if (sync_peer_found && time_since_ms(last_sync_timestamp) >= 20000) {
+        if (sync_peer_found && time_since_ms(last_sync_timestamp) >= SYNC_PEER_TIMEOUT_MS) {
             sync_peer_found = false; // not in sync anymore
             offset = 0; // reset offset
             synchronized = 255;
@@ -290,7 +282,7 @@ int main(int argc, char *argv[]) {
 
         ssize_t bytes_red = 0;
         uint8_t message_type = (uint8_t) incoming_message[bytes_red++];
-        short_out_message_size = 0;
+        out_message_size = 0;
 
         switch (message_type) {
             case GET_TIME:
@@ -301,16 +293,16 @@ int main(int argc, char *argv[]) {
                 }
 
                 // prepare TIME message
-                short_out_message[short_out_message_size++] = TIME;
-                short_out_message[short_out_message_size++] = synchronized;
+                out_message[out_message_size++] = TIME;
+                out_message[out_message_size++] = synchronized;
                 uint64_t net_time = htobe64(time_since_ms(start_time_ms) - offset);
-                memcpy(short_out_message + short_out_message_size, &net_time, sizeof(net_time));
-                short_out_message_size += sizeof(net_time);
+                memcpy(out_message + out_message_size, &net_time, sizeof(net_time));
+                out_message_size += sizeof(net_time);
 
-                sent = sendto(socket_fd, short_out_message, short_out_message_size, 0, 
+                sent = sendto(socket_fd, out_message, out_message_size, 0, 
                     (struct sockaddr*) &sender_address, sender_address_len);
 
-                send_check(sent, short_out_message_size);
+                send_check(sent, out_message_size);
                 
                 control_message(TIME, &bind_address, &sender_address);
                 break;
@@ -320,6 +312,9 @@ int main(int argc, char *argv[]) {
                     printf("Message too long\n");
                     break;
                 }
+
+                peer = known_peer_list_find(peer_list,
+                    sender_address.sin_addr.s_addr, sender_address.sin_port);
                 
                 // check if we can accept new connection
                 if (count < UINT16_MAX) {
@@ -328,58 +323,49 @@ int main(int argc, char *argv[]) {
                             sender_address.sin_port); // add peer to list (do not confirm connection yet)
                     }
 
-                    if (!peer->connection_confirmed) {
+                    if (peer != NULL && !peer->connection_confirmed) {
                         known_peer_mark_conn_ack(peer, &count); // confirm connection
                     }        
                 }
 
+                // Reply if peer was just added or already known
                 if (peer != NULL && peer->connection_confirmed) {
-                    // prepare HELLO_REPLY message
-                    char *hello_reply_msg = (char *) malloc(3 + count * 7);
-                    if (hello_reply_msg == NULL) {
-                        syserr("malloc");
-                    }
-
-                    uint16_t hello_reply_msg_size = 0;
-
-                    hello_reply_msg[hello_reply_msg_size++] = HELLO_REPLY;
+                    out_message[out_message_size++] = HELLO_REPLY;
 
                     uint16_t net_count = htons(count - 1); // exclude peer we send to
-                    memcpy(hello_reply_msg + hello_reply_msg_size, &net_count, PEER_COUNT_BYTE_SIZE);
-                    hello_reply_msg_size += PEER_COUNT_BYTE_SIZE;
-
+                    memcpy(out_message + out_message_size, &net_count, PEER_COUNT_BYTE_SIZE);
+                    out_message_size += PEER_COUNT_BYTE_SIZE;
                     
                     for (peer = peer_list; peer != NULL; peer = peer->next) {
-                        if (peer->connection_confirmed && (peer->address.sin_addr.s_addr != sender_address.sin_addr.s_addr ||
-                            peer->address.sin_port != sender_address.sin_port)) {
+                        if (peer->connection_confirmed && (peer->address.sin_addr.s_addr != sender_address.sin_addr.s_addr
+                            || peer->address.sin_port != sender_address.sin_port)) {
                             
-                            hello_reply_msg[hello_reply_msg_size++] = PEER_ADDRESS_LENGTH;
+                            out_message[out_message_size++] = PEER_ADDRESS_LENGTH;
 
-                            memcpy(hello_reply_msg + hello_reply_msg_size, &peer->address.sin_addr.s_addr,
+                            memcpy(out_message + out_message_size, &peer->address.sin_addr.s_addr,
                                 PEER_ADDRESS_LENGTH);
-                            hello_reply_msg_size += PEER_ADDRESS_LENGTH;
+                            out_message_size += PEER_ADDRESS_LENGTH;
 
-                            memcpy(hello_reply_msg + hello_reply_msg_size, &peer->address.sin_port, PORT_BYTE_SIZE);
-                            hello_reply_msg_size += PORT_BYTE_SIZE;
+                            memcpy(out_message + out_message_size, &peer->address.sin_port, PORT_BYTE_SIZE);
+                            out_message_size += PORT_BYTE_SIZE;
                         }
                     }
 
-                    sent = sendto(socket_fd, hello_reply_msg, hello_reply_msg_size, 0, 
+                    sent = sendto(socket_fd, out_message, out_message_size, 0, 
                         (struct sockaddr*) &sender_address, sender_address_len);
                     
-                    send_check(sent, hello_reply_msg_size);
+                    send_check(sent, out_message_size);
 
                     control_message(HELLO_REPLY, &bind_address, &sender_address);
-
-                    free(hello_reply_msg); // free HELLO_REPLY message
                 } else {
+                    error_msg(incoming_message, bytes_received);
                     printf("could not accept new connection\n");
                     break;
                 }
 
                 break;
             case HELLO_REPLY:
-                // check if we sent HELLO to this peer
+                // check if we sent HELLO to this peer and if we already received correct HELLO_REPLY
                 if (a_appeared && r_appeared && hello_peer_address.sin_addr.s_addr == sender_address.sin_addr.s_addr &&
                     hello_peer_address.sin_port == sender_address.sin_port) {
 
@@ -399,6 +385,7 @@ int main(int argc, char *argv[]) {
 
                     // check if message has expected length (assuming all peers have 4 byte address)
                     if (bytes_received - 3 != peers_count * 7) {
+                        error_msg(incoming_message, bytes_received);
                         printf("BYTES RECEIVED: %ld expected: , %d", bytes_received, 3 + peers_count * 7);
                         printf("HELLO_REPLY message length is not correct\n");
                         break;
@@ -410,6 +397,7 @@ int main(int argc, char *argv[]) {
                         uint8_t peer_address_length;
                         memcpy(&peer_address_length, incoming_message + bytes_red, PEER_ADDRESS_LENGTH_SIZE);
                         bytes_red += PEER_ADDRESS_LENGTH_SIZE + 4; // skip address length and address
+
                         uint16_t peer_port;
                         memcpy(&peer_port, incoming_message + bytes_red, PORT_BYTE_SIZE);
                         bytes_red += PORT_BYTE_SIZE;
@@ -428,7 +416,7 @@ int main(int argc, char *argv[]) {
 
                     bytes_red = 3; // reset bytes_red in order to read peers
 
-                    short_out_message[short_out_message_size++] = CONNECT; // prepare CONNECT message
+                    out_message[out_message_size++] = CONNECT; // prepare CONNECT message
 
                     // read peers (data is correct)
                     for (int i = 0; i < peers_count; ++i) {
@@ -446,21 +434,22 @@ int main(int argc, char *argv[]) {
 
                         peer = known_peer_list_find(peer_list, new_peer_ip, new_peer_port);
 
-                        if (peer == NULL) {
-                            // add peer to the list (do not confirm connection yet)
-                            peer = known_peer_list_add(&peer_list, new_peer_ip, new_peer_port);
-                        }
-
                         // use sender address to send CONNECT message
                         sender_address.sin_addr.s_addr = new_peer_ip;
                         sender_address.sin_port = new_peer_port;
 
-                        sent = sendto(socket_fd, short_out_message, short_out_message_size, 0, 
+                        sent = sendto(socket_fd, out_message, out_message_size, 0, 
                             (struct sockaddr*) &sender_address, sender_address_len);
 
-                        send_check(sent,short_out_message_size);
+                        if (peer == NULL && send_check(sent,out_message_size)) {
+                            // add peer to the list (do not confirm connection yet)
+                            peer = known_peer_list_add(&peer_list, new_peer_ip, new_peer_port);
+                            if (peer == NULL) break; // could not add peer to list because of malloc problems
+                        }
 
-                        peer->ack_connect_token = true; // give ACK_CONNECT token
+                        if (send_check(sent,out_message_size)) {
+                            peer->ack_connect_token = true; // give ACK_CONNECT token
+                        }
 
                         control_message(CONNECT, &bind_address, &sender_address);
                     }
@@ -489,19 +478,19 @@ int main(int argc, char *argv[]) {
                             sender_address.sin_port); // add peer to list (do not confirm connection yet)
                     }
 
-                    if (!peer->connection_confirmed) {
+                    if (peer != NULL && !peer->connection_confirmed) {
                         known_peer_mark_conn_ack(peer, &count); // confirm connection
                     }
                 }
 
                 if (peer != NULL && peer->connection_confirmed) {
                     // prepare ACK_CONNECT message
-                    short_out_message[short_out_message_size++] = ACK_CONNECT;
+                    out_message[out_message_size++] = ACK_CONNECT;
 
-                    sent = sendto(socket_fd, short_out_message, short_out_message_size, 0, 
+                    sent = sendto(socket_fd, out_message, out_message_size, 0, 
                         (struct sockaddr*) &sender_address, sender_address_len);
 
-                    send_check(sent, short_out_message_size);
+                    send_check(sent, out_message_size);
 
                     control_message(ACK_CONNECT, &bind_address, &sender_address);
                 } else {
@@ -523,7 +512,7 @@ int main(int argc, char *argv[]) {
 
                 if (peer == NULL || !peer->ack_connect_token) {
                     error_msg(incoming_message, bytes_received);
-                    printf("ACK_CONNECT from unknown peer\n");
+                    printf("ACK_CONNECT from unexpected peer\n");
                     break;
                 } 
                 
@@ -541,9 +530,9 @@ int main(int argc, char *argv[]) {
                     break;
                 }
 
-                uint8_t sync_in_leader = (uint8_t) incoming_message[bytes_red++]; 
+                uint8_t sync_in_leader_msg = (uint8_t) incoming_message[bytes_red++]; 
 
-                if (sync_in_leader == 0) {
+                if (sync_in_leader_msg == 0) {
                     synchronized = 0;
                     leader_start_privilege = true; // permission to start sync after 2s
                     leader_start_timestamp = current_time_ms(); // set timestamps to start sending SYNC_START after 2s
@@ -551,7 +540,7 @@ int main(int argc, char *argv[]) {
                     sync_peer_found = false;
                     during_sync = false; // stop synchronizing to avoid decrease of sync level
                     printf("BECOMING LEADER\n");
-                } else if (sync_in_leader == 255) {
+                } else if (sync_in_leader_msg == 255) {
                     if (synchronized == 0) {
                         synchronized = 255;
                         leader_start_privilege = false;
@@ -580,36 +569,45 @@ int main(int argc, char *argv[]) {
                     break;
                 }
 
-                T2 = time_since_ms(start_time_ms); // get T2 timestamp (moment of receiving SYNC_START)
+                T2 = time_since_ms(start_time_ms); // get timestamp of receiving SYNC_START
 
                 peer = known_peer_list_find(peer_list, sender_address.sin_addr.s_addr, sender_address.sin_port);
 
                 sync_peer_synchronized = (uint8_t) incoming_message[bytes_red++]; // read synch of peer
                 memcpy(&T1, incoming_message + bytes_red, sizeof(T1)); // get T1 timestamp (time of sending SYNC_START)
-                T1 = be64toh(T1); // convert to host byte order
                 bytes_red += sizeof(T1);
+                T1 = be64toh(T1); // convert to host byte order
+
+                // set synchronized to 255 if our sync peer has sync not lower than ours
+                if (sync_peer_found && sync_peer.sin_addr.s_addr == sender_address.sin_addr.s_addr &&
+                    sync_peer.sin_port == sender_address.sin_port && sync_peer_synchronized >= synchronized)
+                {
+                    sync_peer_found = false;
+                    synchronized = 255;
+                    break; // quit SYNC_START handling
+                }
 
                 // check if we know this peer
                 if (peer != NULL && peer->connection_confirmed && sync_peer_synchronized < 254 && 
                     ((int)synchronized - (int)sync_peer_synchronized >= 2 || 
                         (sync_peer_found && sync_peer.sin_addr.s_addr == sender_address.sin_addr.s_addr &&
                         sync_peer.sin_port == sender_address.sin_port && sync_peer_synchronized < synchronized)))
-                    {
+                    {   
                         printf("SYNCING (mine: %d, incoming: %d)\n", synchronized, sync_peer_synchronized);
-
-                        during_sync = true; // we are synchronizing
 
                         sync_peer_candidate.sin_addr.s_addr = sender_address.sin_addr.s_addr;
                         sync_peer_candidate.sin_port = sender_address.sin_port;
 
-                        short_out_message[short_out_message_size++] = DELAY_REQUEST;
+                        out_message[out_message_size++] = DELAY_REQUEST;
 
-                        sent = sendto(socket_fd, short_out_message, short_out_message_size, 0, 
+                        sent = sendto(socket_fd, out_message, out_message_size, 0, 
                             (struct sockaddr*) &sender_address, sender_address_len);
 
                         T3 = time_since_ms(start_time_ms); // get T3 timestamp (moment of sending DELAY_REQUEST)
 
-                        send_check(sent, short_out_message_size);
+                        if (send_check(sent, out_message_size)) {
+                            during_sync = true; // we are synchronizing
+                        }
 
                         control_message(DELAY_REQUEST, &bind_address, &sender_address);
                 } else {
@@ -630,7 +628,7 @@ int main(int argc, char *argv[]) {
                 
                 // if we do not know this peer or response was already sent we ignore the message
                 if (peer == NULL || !peer->connection_confirmed || !peer->delay_response_token || 
-                    time_since_ms(peer->last_message_timestamp_ms) >= 5000)
+                    time_since_ms(peer->last_message_timestamp_ms) >= DELAY_REQUEST_TIMEOUT_MS)
                 {
 
                     error_msg(incoming_message, bytes_received);
@@ -641,16 +639,16 @@ int main(int argc, char *argv[]) {
                 peer->delay_response_token = false; // remove delay response token
 
                 // prepare DELAY_RESPONSE message
-                short_out_message[short_out_message_size++] = DELAY_RESPONSE;
-                short_out_message[short_out_message_size++] = synchronized;
+                out_message[out_message_size++] = DELAY_RESPONSE;
+                out_message[out_message_size++] = synchronized;
                 uint64_t nett_time = htobe64(time_since_ms(start_time_ms) - offset);
-                memcpy(short_out_message + short_out_message_size, &nett_time, sizeof(nett_time));
-                short_out_message_size += sizeof(nett_time);
+                memcpy(out_message + out_message_size, &nett_time, sizeof(nett_time));
+                out_message_size += sizeof(nett_time);
 
-                sent = sendto(socket_fd, short_out_message, short_out_message_size, 0, 
+                sent = sendto(socket_fd, out_message, out_message_size, 0, 
                     (struct sockaddr*) &sender_address, sender_address_len);
                 
-                send_check(sent, short_out_message_size);
+                send_check(sent, out_message_size);
 
                 control_message(DELAY_RESPONSE, &bind_address, &sender_address);
 
@@ -686,8 +684,8 @@ int main(int argc, char *argv[]) {
                         break;
                     }
 
-                    offset = (T2 - T1 + T3 - T4) / 2; // update offset
-                    printf("new offset: %" PRIu64 "\n", offset);
+                    offset = ((int64_t) T2 - (int64_t) T1 + (int64_t) T3 - (int64_t) T4) / 2; // update offset
+                    printf("new offset: %" PRId64 "\n", offset);
 
                     sync_peer.sin_addr.s_addr = sync_peer_candidate.sin_addr.s_addr;
                     sync_peer.sin_port = sync_peer_candidate.sin_port;
@@ -716,19 +714,6 @@ int main(int argc, char *argv[]) {
         printf("Peer list freed.\n");
     } else {
         printf("cannot free peer list\n");
-    }
-
-    free(incoming_message);
-    if (incoming_message == NULL) {
-        printf("Incoming message freed.\n");
-    } else {
-        printf("cannot free incoming message\n");
-    }
-    free(short_out_message);
-    if (short_out_message == NULL) {
-        printf("Short outgoing message freed.\n");
-    } else {
-        printf("cannot free short outgoing message\n");
     }
 
     return 0;

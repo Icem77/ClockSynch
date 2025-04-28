@@ -19,8 +19,6 @@ struct known_peer {
     struct known_peer *next;
 };
 
-struct known_peer* known_peer_list_init();
-
 bool known_peer_equals(struct known_peer *p, in_addr_t ip, uint16_t port);
 
 void known_peer_mark_conn_ack(struct known_peer *peer, uint16_t *count);

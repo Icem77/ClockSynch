@@ -10,11 +10,6 @@
 #include "known-peer.h"
 #include "err.h"
 
-struct known_peer* known_peer_list_init() {
-    struct known_peer *head = NULL;
-    return head;
-}
-
 bool known_peer_equals(struct known_peer *p, in_addr_t ip, uint16_t port) {
     return (p->address.sin_addr.s_addr == ip && p->address.sin_port == port);
 }
@@ -28,6 +23,7 @@ struct known_peer* known_peer_list_add(struct known_peer **head, in_addr_t ip, u
     struct known_peer *new_peer = malloc(sizeof(struct known_peer));
     if (new_peer == NULL) {
         syserr("malloc");
+        return NULL;
     }
 
     memset(new_peer, 0, sizeof(*new_peer));
