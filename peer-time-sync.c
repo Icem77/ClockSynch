@@ -163,7 +163,7 @@ void print_short_hello_reply_msg_error(struct known_peer *peer_list, uint16_t co
                                 in_addr_t sender_addr, in_port_t sender_port) 
 {
     (*bytes) = 0;
-    incoming_message[(*bytes)++] = HELLO_REPLY;
+    out_message[(*bytes)++] = HELLO_REPLY;
 
     uint16_t net_count = htons(count - 1); // exclude peer we send to
     memcpy(out_message + (*bytes), &net_count, PEER_COUNT_BYTE_SIZE);
@@ -173,20 +173,20 @@ void print_short_hello_reply_msg_error(struct known_peer *peer_list, uint16_t co
         if (peer->connection_confirmed && (peer->address.sin_addr.s_addr != sender_addr
             || peer->address.sin_port != sender_port)) {
             
-            incoming_message[(*bytes)++] = PEER_ADDRESS_LENGTH;
+            out_message[(*bytes)++] = PEER_ADDRESS_LENGTH;
 
-            memcpy(incoming_message + (*bytes), &peer->address.sin_addr.s_addr,
+            memcpy(out_message + (*bytes), &peer->address.sin_addr.s_addr,
                 PEER_ADDRESS_LENGTH);
             (*bytes) += PEER_ADDRESS_LENGTH;
 
-            memcpy(incoming_message + (*bytes), &peer->address.sin_port, PORT_BYTE_SIZE);
+            memcpy(out_message + (*bytes), &peer->address.sin_port, PORT_BYTE_SIZE);
             (*bytes) += PORT_BYTE_SIZE;
 
             break; // one peer is enough as we print max 10 bytes in ERROR MSG
         }
     }
 
-    error_msg(incoming_message, *bytes);
+    error_msg(out_message, *bytes);
 }
 
 /* Checks if HELLO_REPLY message is correct:
@@ -310,6 +310,7 @@ int main(int argc, char *argv[]) {
     bool a_appeared = false;
     bool r_appeared = false;
 
+    opterr = 0; // Disable automatic error messages
     while ((opt = getopt(argc, argv, "b:p:a:r:")) != -1) {
         switch(opt) {
             case 'b': // Bind adress
@@ -350,6 +351,11 @@ int main(int argc, char *argv[]) {
                 r_appeared = true;
 
                 break;
+            case '?':
+            case ':':
+                // brak argumentu
+                fprintf(stderr, "ERROR: unknown or empty option „-%c\"\n", optopt);
+                exit(1);
         }
     }
 
@@ -518,8 +524,8 @@ int main(int argc, char *argv[]) {
 
                 // Reply if peer was just added or already known
                 if (peer != NULL && peer->connection_confirmed) {
-                    if (3 + (count - 1) * 7 > MAX_MSG_SIZE) {
-                        print_short_hello_reply_msg_error(peer_list, count, &bytes_received,
+                    if (3 + ((int) count - 1) * 7 > MAX_MSG_SIZE) {
+                        print_short_hello_reply_msg_error(peer_list, count, &out_message_size,
                                                 sender_address.sin_addr.s_addr, sender_address.sin_port);
                         break;
                     }
