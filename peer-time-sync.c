@@ -469,7 +469,12 @@ int main(int argc, char *argv[]) {
                 0, (struct sockaddr *) &sender_address, &sender_address_len);
 
         if (bytes_received == -1) {
-            continue;
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                continue; // no data available
+            } else {
+                syserr("recvfrom");
+                exit(1);
+            }
         } else if (bytes_received == 0) {
             error_msg(incoming_message, bytes_received);
             continue;  
@@ -805,6 +810,8 @@ int main(int argc, char *argv[]) {
                 }
 
                 break;
+            default: // message not recognized
+                error_msg(incoming_message, bytes_received);
         }
     }
 
