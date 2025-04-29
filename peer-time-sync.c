@@ -158,7 +158,7 @@ void delay_response_msg_load(ssize_t *out_message_size, uint8_t synchronized, ui
     (*out_message_size) += sizeof(nett_time);
 }
 
-/* Prints error msg to stderr of our own HELLO_REPLY */
+/* Prints error msg to stderr of our own HELLO_REPLY, overwrites bytes_received and incoming buffer! */
 void print_short_hello_reply_msg_error(struct known_peer *peer_list, uint16_t count, ssize_t *bytes,
                                 in_addr_t sender_addr, in_port_t sender_port) 
 {
