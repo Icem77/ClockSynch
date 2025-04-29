@@ -1,11 +1,11 @@
-#include <stdlib.h>      // malloc, free, exit
-#include <string.h>      // memset, memcpy
-#include <stdint.h>      // uint16_t, uint8_t, etc.
-#include <stdbool.h>     // bool, true, false
-#include <stdio.h>       // printf, fprintf, etc.
-#include <arpa/inet.h>   // htons, ntohs, inet_pton, inet_ntoa, etc.
-#include <netinet/in.h>  // struct sockaddr_in, in_addr_t
-#include <sys/types.h>   // ssize_t, etc.
+#include <stdlib.h>      
+#include <string.h>      
+#include <stdint.h>      
+#include <stdbool.h>     
+#include <stdio.h>       
+#include <arpa/inet.h>   
+#include <netinet/in.h>  
+#include <sys/types.h>   
 
 #include "known-peer.h"
 #include "err.h"

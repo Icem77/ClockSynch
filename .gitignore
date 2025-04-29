@@ -1,3 +1,4 @@
 *.o
 peer-time-sync
 later.txt
+.vscode

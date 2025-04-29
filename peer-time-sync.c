@@ -158,9 +158,40 @@ void delay_response_msg_load(ssize_t *out_message_size, uint8_t synchronized, ui
     (*out_message_size) += sizeof(nett_time);
 }
 
+/* Prints error msg to stderr of our own HELLO_REPLY */
+void print_short_hello_reply_msg_error(struct known_peer *peer_list, uint16_t count, ssize_t *bytes,
+                                in_addr_t sender_addr, in_port_t sender_port) 
+{
+    (*bytes) = 0;
+    incoming_message[(*bytes)++] = HELLO_REPLY;
+
+    uint16_t net_count = htons(count - 1); // exclude peer we send to
+    memcpy(out_message + (*bytes), &net_count, PEER_COUNT_BYTE_SIZE);
+    (*bytes) += PEER_COUNT_BYTE_SIZE;
+    
+    for (struct known_peer *peer = peer_list; peer != NULL; peer = peer->next) {
+        if (peer->connection_confirmed && (peer->address.sin_addr.s_addr != sender_addr
+            || peer->address.sin_port != sender_port)) {
+            
+            incoming_message[(*bytes)++] = PEER_ADDRESS_LENGTH;
+
+            memcpy(incoming_message + (*bytes), &peer->address.sin_addr.s_addr,
+                PEER_ADDRESS_LENGTH);
+            (*bytes) += PEER_ADDRESS_LENGTH;
+
+            memcpy(incoming_message + (*bytes), &peer->address.sin_port, PORT_BYTE_SIZE);
+            (*bytes) += PORT_BYTE_SIZE;
+
+            break; // one peer is enough as we print max 10 bytes in ERROR MSG
+        }
+    }
+
+    error_msg(incoming_message, *bytes);
+}
+
 /* Checks if HELLO_REPLY message is correct:
     - message length
-    - address lengths is 4
+    - address lengths are 4
     - port is non 0
     - sender & reciver are not included in the message
 */
@@ -398,8 +429,9 @@ int main(int argc, char *argv[]) {
             out_message[out_message_size++] = SYNC_START;
             out_message[out_message_size++] = synchronized;
             
-            sync_start_loop_timestamp = current_time_ms(); // update timestamp
+            sync_start_loop_timestamp = current_time_ms();
 
+            // sent SYNC_START's to connected peers
             for (peer = peer_list; peer != NULL; peer = peer->next) {
                 if (peer->connection_confirmed) {
                     uint64_t net_time = htobe64(time_since_ms(start_time_ms) - offset);
@@ -423,14 +455,12 @@ int main(int argc, char *argv[]) {
         // if we are during sync check how much time passed since SYNC_START message
         if (during_sync && time_since_ms(start_time_ms) - T2 >= DELAY_RESPONSE_TIMEOUT_MS) {
             during_sync = false; // stop synchronizing
-            //printf("DELAY_RESPONSE timeout\n");
         }
 
         if (sync_peer_found && time_since_ms(last_sync_timestamp) >= SYNC_PEER_TIMEOUT_MS) {
             sync_peer_found = false; // not in sync anymore
             offset = 0; // reset offset
             synchronized = 255;
-            //printf("Lost connection with sync_peer\n");
         }
 
         struct sockaddr_in sender_address;
@@ -442,7 +472,6 @@ int main(int argc, char *argv[]) {
             continue;
         } else if (bytes_received == 0) {
             error_msg(incoming_message, bytes_received);
-            //printf("Received 0 bytes\n");
             continue;  
         }
 
@@ -462,6 +491,7 @@ int main(int argc, char *argv[]) {
                 send_check(sent, out_message_size);
                 
                 control_message(TIME, &bind_address, &sender_address);
+
                 break;
             case HELLO:
                 if (!length_check(bytes_received, HELLO_LENGTH)) break;
@@ -483,6 +513,12 @@ int main(int argc, char *argv[]) {
 
                 // Reply if peer was just added or already known
                 if (peer != NULL && peer->connection_confirmed) {
+                    if (3 + (count - 1) * 7 > MAX_MSG_SIZE) {
+                        print_short_hello_reply_msg_error(peer_list, count, &bytes_received,
+                                                sender_address.sin_addr.s_addr, sender_address.sin_port);
+                        break;
+                    }
+
                     hello_reply_msg_load(&out_message_size, peer_list, count,
                                          sender_address.sin_addr.s_addr, sender_address.sin_port);
 
@@ -494,8 +530,6 @@ int main(int argc, char *argv[]) {
                     control_message(HELLO_REPLY, &bind_address, &sender_address);
                 } else {
                     error_msg(incoming_message, bytes_received);
-                    //printf("could not accept new connection\n");
-                    break;
                 }
 
                 break;
