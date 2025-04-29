@@ -263,21 +263,6 @@ bool length_check(ssize_t bytes_received, ssize_t bytes_expected) {
     }
 }
 
-void control_message(uint8_t message_type, struct sockaddr_in *sender_address, 
-                     struct sockaddr_in *reciever_address) 
-{
-    char sender_ip_str[INET_ADDRSTRLEN];
-    char reciever_ip_str[INET_ADDRSTRLEN];
-    
-    inet_ntop(AF_INET, &(*sender_address).sin_addr, sender_ip_str, sizeof(sender_ip_str));
-    uint16_t sender_port = ntohs((*sender_address).sin_port);
-    inet_ntop(AF_INET, &(*reciever_address).sin_addr, reciever_ip_str, sizeof(reciever_ip_str));
-    uint16_t reciever_port = ntohs((*reciever_address).sin_port);
-
-    printf("[%s:%" PRIu16 "] Sent %" PRIu8 " to %s:%" PRIu16 "\n", 
-        sender_ip_str, sender_port, message_type, reciever_ip_str, reciever_port);
-}
-
 int main(int argc, char *argv[]) {
     // Add SIGINT handler
     if (signal(SIGINT, handle_sigint) == SIG_ERR) {
@@ -394,8 +379,6 @@ int main(int argc, char *argv[]) {
         if (send_check(bytes_sent, out_message_size)) {
             known_peer_list_add(&peer_list, hello_peer_address.sin_addr.s_addr,
                     hello_peer_address.sin_port);
-                    
-            control_message(HELLO, &bind_address, &hello_peer_address);
         }        
     }
 
@@ -453,7 +436,6 @@ int main(int argc, char *argv[]) {
                     }
                     
                     out_message_size -= sizeof(net_time); // remove timestamp from message
-                    control_message(SYNC_START, &bind_address, &peer->address);
                 }
             }
         }
@@ -501,8 +483,6 @@ int main(int argc, char *argv[]) {
 
                 send_check(sent, out_message_size);
                 
-                control_message(TIME, &bind_address, &sender_address);
-
                 break;
             case HELLO:
                 if (!length_check(bytes_received, HELLO_LENGTH)) break;
@@ -538,7 +518,6 @@ int main(int argc, char *argv[]) {
                     
                     send_check(sent, out_message_size);
 
-                    control_message(HELLO_REPLY, &bind_address, &sender_address);
                 } else {
                     error_msg(incoming_message, bytes_received);
                 }
@@ -605,8 +584,6 @@ int main(int argc, char *argv[]) {
                         if (send_check(sent,out_message_size)) {
                             peer->ack_connect_token = true; // give ACK_CONNECT token
                         }
-
-                        control_message(CONNECT, &bind_address, &sender_address);
                     }
 
                     a_appeared = false; // accept only one correct HELLO_REPLY 
@@ -639,8 +616,6 @@ int main(int argc, char *argv[]) {
                         (struct sockaddr*) &sender_address, sender_address_len);
 
                     send_check(sent, out_message_size);
-
-                    control_message(ACK_CONNECT, &bind_address, &sender_address);
                 } else {
                     error_msg(incoming_message, bytes_received);
                 }
@@ -732,8 +707,6 @@ int main(int argc, char *argv[]) {
                         if (send_check(sent, out_message_size)) {
                             during_sync = true; // we are synchronizing
                         }
-
-                        control_message(DELAY_REQUEST, &bind_address, &sender_address);
                 } else {
                     error_msg(incoming_message, bytes_received);
                 }
@@ -762,8 +735,6 @@ int main(int argc, char *argv[]) {
                     (struct sockaddr*) &sender_address, sender_address_len);
                 
                 send_check(sent, out_message_size);
-
-                control_message(DELAY_RESPONSE, &bind_address, &sender_address);
 
                 break;
             case DELAY_RESPONSE:
